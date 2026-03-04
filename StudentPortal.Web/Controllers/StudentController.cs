@@ -1,7 +1,7 @@
-﻿using AutoMapper;
+using AutoMapper;
 using Microsoft.AspNetCore.Mvc;
 using StudentPortal.Web.Models;
-using StudentPortal.Web.Models.Students.DTOs;   // ✅ IMPORTANT FIX
+using StudentPortal.Web.Models.Students.DTOs;
 using StudentPortal.Web.Services.Students;
 
 namespace StudentPortal.Web.Controllers
@@ -11,7 +11,6 @@ namespace StudentPortal.Web.Controllers
         private readonly IStudentService _studentService;
         private readonly IMapper _mapper;
 
-        // Constructor
         public StudentController(IStudentService studentService, IMapper mapper)
         {
             _studentService = studentService;
@@ -27,6 +26,7 @@ namespace StudentPortal.Web.Controllers
         }
 
         [HttpPost]
+        [ValidateAntiForgeryToken]   // ✅ Added for security
         public async Task<IActionResult> AddAsync(NewStudentViewModel newStudent)
         {
             if (!ModelState.IsValid)
@@ -67,6 +67,7 @@ namespace StudentPortal.Web.Controllers
         }
 
         [HttpPost]
+        [ValidateAntiForgeryToken]   // ✅ Added for security
         public async Task<IActionResult> EditInfoAsync(UpdateStudentViewModel updateStudent)
         {
             if (!ModelState.IsValid)
@@ -86,6 +87,7 @@ namespace StudentPortal.Web.Controllers
         // ---------------- DELETE ----------------
 
         [HttpPost]
+        [ValidateAntiForgeryToken]   // ✅ IMPORTANT
         public async Task<IActionResult> DeleteAsync(int id)
         {
             await _studentService.DeleteAsync(id);
