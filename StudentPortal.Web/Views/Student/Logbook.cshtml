@@ -20,9 +20,28 @@
                 <td>@student.Id</td>
                 <td>@student.Name</td>
                 <td>@student.Email</td>
-                <td>
-                    <a class="btn btn-success" role="button" asp-controller="Student" asp-action="EditInfo" asp-route-id="@student.Id">Edit</a>
-                </td>
+               <td>
+    <a class="btn btn-success"
+       asp-controller="Student"
+       asp-action="EditInfo"
+       asp-route-id="@student.Id">
+        Edit
+    </a>
+
+    <form asp-controller="Student"
+          asp-action="DeleteAsync"
+          asp-route-id="@student.Id"
+          method="post"
+          style="display:inline;"
+          onsubmit="return confirm('Are you sure you want to delete this student?');">
+
+        @Html.AntiForgeryToken()
+
+        <button type="submit" class="btn btn-danger">
+            Delete
+        </button>
+    </form>
+</td>
             </tr>
         }
     </tbody>
