@@ -18,6 +18,9 @@ pipeline {
 
         IIS_PATH = "C:\\inetpub\\wwwroot\\testWebsite"
         APP_POOL = "testAppPool"
+
+        WEBSITE_NAME = "testWebsite"
+        WEBSITE_PORT = "8080"
     }
 
     stages {
@@ -83,6 +86,38 @@ pipeline {
 
                 Import-Module WebAdministration
 
+                Write-Host "Checking Application Pool..."
+
+                if (!(Test-Path "IIS:\\AppPools\\$env:APP_POOL")) {
+                    Write-Host "Creating Application Pool..."
+                    New-WebAppPool -Name $env:APP_POOL
+                }
+                else {
+                    Write-Host "Application Pool already exists"
+                }
+
+                Write-Host "Checking IIS Website..."
+
+                if (!(Test-Path "IIS:\\Sites\\$env:WEBSITE_NAME")) {
+
+                    Write-Host "Creating IIS Website..."
+
+                    if (!(Test-Path $deployPath)) {
+                        New-Item -ItemType Directory -Path $deployPath | Out-Null
+                    }
+
+                    New-Website `
+                        -Name $env:WEBSITE_NAME `
+                        -Port $env:WEBSITE_PORT `
+                        -PhysicalPath $deployPath `
+                        -ApplicationPool $env:APP_POOL
+
+                    Write-Host "Website created successfully."
+                }
+                else {
+                    Write-Host "Website already exists."
+                }
+
                 Write-Host "Checking App Pool state..."
                 $state = (Get-WebAppPoolState -Name $env:APP_POOL).Value
 
@@ -90,20 +125,28 @@ pipeline {
                     Write-Host "Stopping IIS App Pool..."
                     Stop-WebAppPool -Name $env:APP_POOL
                     Start-Sleep -Seconds 3
-                } else {
+                }
+                else {
                     Write-Host "App Pool already stopped."
                 }
 
-                Write-Host "Cleaning IIS folder..."
-                if (Test-Path $deployPath) {
-                    Remove-Item "$deployPath\\*" -Recurse -Force -ErrorAction SilentlyContinue
+                Write-Host "Preparing IIS directory..."
+
+                if (!(Test-Path $deployPath)) {
+                    New-Item -ItemType Directory -Path $deployPath | Out-Null
                 }
 
-                Write-Host "Extracting build..."
+                Write-Host "Cleaning old files..."
+                Remove-Item "$deployPath\\*" -Recurse -Force -ErrorAction SilentlyContinue
+
+                Write-Host "Extracting new build..."
                 Expand-Archive -Path $zipPath -DestinationPath $deployPath -Force
 
                 Write-Host "Starting IIS App Pool..."
                 Start-WebAppPool -Name $env:APP_POOL
+
+                Write-Host "Starting IIS Website..."
+                Start-Website -Name $env:WEBSITE_NAME
 
                 Write-Host "Deployment completed successfully."
                 '''
