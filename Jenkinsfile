@@ -16,8 +16,8 @@ pipeline {
         PUBLISH_FOLDER = "publish"
         ARTIFACT_NAME = "website_${BUILD_NUMBER}.zip"
 
-        IIS_PATH = "C:\\inetpub\\wwwroot\\MyWebsite"
-        APP_POOL = "StudentPortalAppPool"
+        IIS_PATH = "C:\\inetpub\\wwwroot\\testWebsite"
+        APP_POOL = "testAppPool"
     }
 
     stages {
