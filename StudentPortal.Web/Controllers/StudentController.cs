@@ -84,14 +84,6 @@ namespace StudentPortal.Web.Controllers
             return RedirectToAction(nameof(Logbook));
         }
 
-        // ---------------- DELETE ----------------
-
-        [HttpPost]
-        [ValidateAntiForgeryToken]   // ✅ IMPORTANT
-        public async Task<IActionResult> DeleteAsync(int id)
-        {
-            await _studentService.DeleteAsync(id);
-            return RedirectToAction(nameof(Logbook));
-        }
+       
     }
 }
