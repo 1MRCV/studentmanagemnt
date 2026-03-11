@@ -1,33 +1,54 @@
-pipeline {
+properties([
+  parameters([
 
-    agent { label 'windows-agent' }
+    choice(
+      name: 'ENVIRONMENT',
+      choices: ['DEV','PRODUCTION'],
+      description: 'Select environment'
+    ),
 
-    parameters {
+    choice(
+      name: 'ACTION',
+      choices: ['DEPLOY','ROLLBACK'],
+      description: 'Deployment action'
+    ),
 
-        choice(
-            name: 'ENVIRONMENT',
-            choices: ['DEV','PRODUCTION'],
-            description: 'Select deployment environment'
-        )
+    [$class: 'CascadeChoiceParameter',
+      name: 'ARTIFACT_BUILD',
+      description: 'Select artifact to deploy',
+      referencedParameters: 'ENVIRONMENT',
+      choiceType: 'PT_SINGLE_SELECT',
+      script: [
+        $class: 'GroovyScript',
+        sandbox: false,
+        script: """
+            def env = ENVIRONMENT
+            def path = "C:/jenkins-artifacts"
 
-        choice(
-            name: 'ACTION',
-            choices: ['DEPLOY','ROLLBACK'],
-            description: 'Deployment action'
-        )
+            def dir = new File(path)
 
-        string(
-            name: 'ARTIFACT_BUILD',
-            defaultValue: '',
-            description: 'Leave empty to deploy latest build'
-        )
+            if(!dir.exists()){
+                return ["No artifacts found"]
+            }
 
-        string(
-            name: 'BRANCH',
-            defaultValue: 'main',
-            description: 'Git branch to build'
-        )
-    }
+            def folders = dir.listFiles()
+                .findAll { it.isDirectory() }
+                .sort { -it.lastModified() }
+                .collect { it.name }
+
+            return folders
+        """
+      ]
+    ],
+
+    string(
+      name: 'BRANCH',
+      defaultValue: 'main',
+      description: 'Git branch to build'
+    )
+
+  ])
+])
 
     environment {
 
