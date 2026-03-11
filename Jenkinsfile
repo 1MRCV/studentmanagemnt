@@ -3,16 +3,22 @@ pipeline {
 
     parameters {
 
-        string(
-            name: 'BRANCH',
-            defaultValue: 'main',
-            description: 'Git branch to build'
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['DEV','PRODUCTION'],
+            description: 'Select environment to deploy'
         )
 
         string(
             name: 'DEPLOY_BUILD',
             defaultValue: '',
-            description: 'Build number to deploy (leave empty for latest)'
+            description: 'Artifact version to deploy (leave empty for latest)'
+        )
+
+        string(
+            name: 'BRANCH',
+            defaultValue: 'main',
+            description: 'Git branch to build'
         )
     }
 
@@ -22,21 +28,25 @@ pipeline {
 
         PUBLISH_FOLDER = "publish"
 
-        IIS_PATH = "C:\\inetpub\\wwwroot\\testWebsite"
-        APP_POOL = "testAppPool"
-
-        WEBSITE_NAME = "testWebsite"
-        WEBSITE_PORT = "8080"
-
         ARTIFACT_STORAGE = "C:\\jenkins-artifacts"
+
+        DEV_PATH = "C:\\inetpub\\dev"
+        PROD_PATH = "C:\\inetpub\\prod"
+
+        DEV_SITE = "student-dev"
+        PROD_SITE = "student-prod"
+
+        DEV_POOL = "student-dev-pool"
+        PROD_POOL = "student-prod-pool"
+
+        DEV_PORT = "8081"
+        PROD_PORT = "8082"
     }
 
     stages {
 
         stage('Clean Workspace') {
-            steps {
-                deleteDir()
-            }
+            steps { deleteDir() }
         }
 
         stage('Checkout Code') {
@@ -48,25 +58,19 @@ pipeline {
 
         stage('Restore Dependencies') {
             steps {
-                powershell '''
-                dotnet restore
-                '''
+                powershell 'dotnet restore'
             }
         }
 
         stage('Build Application') {
             steps {
-                powershell '''
-                dotnet build --configuration Release
-                '''
+                powershell 'dotnet build --configuration Release'
             }
         }
 
         stage('Publish Website') {
             steps {
-                powershell '''
-                dotnet publish -c Release -o $env:PUBLISH_FOLDER
-                '''
+                powershell 'dotnet publish -c Release -o $env:PUBLISH_FOLDER'
             }
         }
 
@@ -78,115 +82,98 @@ pipeline {
                 $zip = "$storage\\build_$env:BUILD_NUMBER.zip"
 
                 if (!(Test-Path $storage)) {
-                    New-Item -ItemType Directory -Path $storage | Out-Null
+                    New-Item -ItemType Directory -Path $storage
                 }
-
-                Write-Host "Creating artifact version $env:BUILD_NUMBER"
 
                 Compress-Archive `
                     -Path "$env:PUBLISH_FOLDER\\*" `
                     -DestinationPath $zip `
                     -Force
 
-                Write-Host "Stored artifact: $zip"
-
+                Write-Host "Artifact stored: $zip"
                 '''
             }
         }
 
-        stage('Deploy to IIS') {
+        stage('Deploy') {
             steps {
                 powershell '''
 
-                $ErrorActionPreference = "Stop"
-
                 Import-Module WebAdministration
 
-                $deployPath = "$env:IIS_PATH"
+                $envName = "$env:ENVIRONMENT"
                 $buildToDeploy = "$env:DEPLOY_BUILD"
 
                 if ([string]::IsNullOrEmpty($buildToDeploy)) {
-
-                    Write-Host "Deploying latest build: $env:BUILD_NUMBER"
-                    $zipPath = "$env:ARTIFACT_STORAGE\\build_$env:BUILD_NUMBER.zip"
+                    $buildToDeploy = "$env:BUILD_NUMBER"
                 }
-                else {
 
-                    Write-Host "Deploying selected build: $buildToDeploy"
-                    $zipPath = "$env:ARTIFACT_STORAGE\\build_$buildToDeploy.zip"
-                }
+                $zipPath = "$env:ARTIFACT_STORAGE\\build_$buildToDeploy.zip"
 
                 if (!(Test-Path $zipPath)) {
                     throw "Artifact not found: $zipPath"
                 }
 
-                Write-Host "Checking Application Pool..."
+                if ($envName -eq "DEV") {
 
-                if (!(Test-Path "IIS:\\AppPools\\$env:APP_POOL")) {
+                    $siteName = "$env:DEV_SITE"
+                    $pool = "$env:DEV_POOL"
+                    $path = "$env:DEV_PATH"
+                    $port = "$env:DEV_PORT"
 
-                    Write-Host "Creating Application Pool..."
-                    New-WebAppPool -Name $env:APP_POOL
+                } else {
+
+                    $siteName = "$env:PROD_SITE"
+                    $pool = "$env:PROD_POOL"
+                    $path = "$env:PROD_PATH"
+                    $port = "$env:PROD_PORT"
+
                 }
-                else {
-                    Write-Host "Application Pool already exists"
+
+                Write-Host "Deploying Build $buildToDeploy to $envName"
+
+                if (!(Test-Path "IIS:\\AppPools\\$pool")) {
+                    New-WebAppPool -Name $pool
                 }
 
-                Write-Host "Checking IIS Website..."
+                if (!(Test-Path $path)) {
+                    New-Item -ItemType Directory -Path $path
+                }
 
-                if (!(Test-Path "IIS:\\Sites\\$env:WEBSITE_NAME")) {
-
-                    Write-Host "Creating IIS Website..."
-
-                    if (!(Test-Path $deployPath)) {
-                        New-Item -ItemType Directory -Path $deployPath | Out-Null
-                    }
+                if (!(Test-Path "IIS:\\Sites\\$siteName")) {
 
                     New-Website `
-                        -Name $env:WEBSITE_NAME `
-                        -Port $env:WEBSITE_PORT `
-                        -PhysicalPath $deployPath `
-                        -ApplicationPool $env:APP_POOL
+                        -Name $siteName `
+                        -Port $port `
+                        -PhysicalPath $path `
+                        -ApplicationPool $pool
 
-                    Write-Host "Website created successfully."
-                }
-                else {
-                    Write-Host "Website already exists."
                 }
 
-                Write-Host "Checking App Pool state..."
-
-                $state = (Get-WebAppPoolState -Name $env:APP_POOL).Value
+                $state = (Get-WebAppPoolState -Name $pool).Value
 
                 if ($state -eq "Started") {
-
-                    Write-Host "Stopping IIS App Pool..."
-                    Stop-WebAppPool -Name $env:APP_POOL
-                    Start-Sleep -Seconds 3
-                }
-                else {
-
-                    Write-Host "App Pool already stopped."
+                    Stop-WebAppPool $pool
+                    Start-Sleep -Seconds 2
                 }
 
-                Write-Host "Preparing IIS directory..."
+                Remove-Item "$path\\*" -Recurse -Force -ErrorAction SilentlyContinue
 
-                if (!(Test-Path $deployPath)) {
-                    New-Item -ItemType Directory -Path $deployPath | Out-Null
-                }
+                Expand-Archive `
+                    -Path $zipPath `
+                    -DestinationPath $path `
+                    -Force
 
-                Write-Host "Cleaning old files..."
-                Remove-Item "$deployPath\\*" -Recurse -Force -ErrorAction SilentlyContinue
+                $versionFile = "$path\\version.txt"
 
-                Write-Host "Extracting build..."
-                Expand-Archive -Path $zipPath -DestinationPath $deployPath -Force
+                "Environment: $envName" | Out-File $versionFile
+                "Build: $buildToDeploy" | Out-File $versionFile -Append
+                "Date: $(Get-Date)" | Out-File $versionFile -Append
 
-                Write-Host "Starting IIS App Pool..."
-                Start-WebAppPool -Name $env:APP_POOL
+                Start-WebAppPool $pool
+                Start-Website $siteName
 
-                Write-Host "Starting IIS Website..."
-                Start-Website -Name $env:WEBSITE_NAME
-
-                Write-Host "Deployment completed successfully."
+                Write-Host "Deployment completed"
 
                 '''
             }
@@ -198,15 +185,19 @@ pipeline {
 
                 Import-Module WebAdministration
 
-                $state = (Get-WebAppPoolState -Name $env:APP_POOL).Value
+                if ($env:ENVIRONMENT -eq "DEV") {
+                    $pool="$env:DEV_POOL"
+                } else {
+                    $pool="$env:PROD_POOL"
+                }
+
+                $state = (Get-WebAppPoolState -Name $pool).Value
 
                 Write-Host "App Pool State: $state"
 
                 if ($state -ne "Started") {
-                    throw "Deployment verification failed!"
+                    throw "Deployment failed"
                 }
-
-                Write-Host "Deployment verified successfully."
 
                 '''
             }
@@ -216,11 +207,12 @@ pipeline {
     post {
 
         success {
-            echo "Build ${BUILD_NUMBER} deployed successfully."
+            echo "Deployment successful"
         }
 
         failure {
-            echo "Deployment failed. Please check logs."
+            echo "Deployment failed"
         }
+
     }
 }
