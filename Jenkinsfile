@@ -1,4 +1,5 @@
 pipeline {
+
     agent { label 'windows-agent' }
 
     parameters {
@@ -6,13 +7,13 @@ pipeline {
         choice(
             name: 'ENVIRONMENT',
             choices: ['DEV','PRODUCTION'],
-            description: 'Select environment to deploy'
+            description: 'Select deployment environment'
         )
 
         string(
             name: 'DEPLOY_BUILD',
             defaultValue: '',
-            description: 'Artifact version to deploy (leave empty for latest)'
+            description: 'Build version to deploy (leave empty for latest)'
         )
 
         string(
@@ -28,7 +29,10 @@ pipeline {
 
         PUBLISH_FOLDER = "publish"
 
-        ARTIFACT_STORAGE = "C:\\jenkins-artifacts"
+        ARTIFACT_ROOT = "C:\\jenkins-artifacts"
+
+        DEV_ARTIFACT = "C:\\jenkins-artifacts\\DEV"
+        PROD_ARTIFACT = "C:\\jenkins-artifacts\\PROD"
 
         DEV_PATH = "C:\\inetpub\\dev"
         PROD_PATH = "C:\\inetpub\\prod"
@@ -78,19 +82,51 @@ pipeline {
             steps {
                 powershell '''
 
-                $storage = "$env:ARTIFACT_STORAGE"
-                $zip = "$storage\\build_$env:BUILD_NUMBER.zip"
+                $build = $env:BUILD_NUMBER
+                $version = "1.0.$build"
+                $date = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
-                if (!(Test-Path $storage)) {
-                    New-Item -ItemType Directory -Path $storage
+                $commit = git rev-parse --short HEAD
+                $branch = git rev-parse --abbrev-ref HEAD
+
+                if ($env:ENVIRONMENT -eq "DEV") {
+                    $artifactRoot = "$env:DEV_ARTIFACT"
                 }
+                else {
+                    $artifactRoot = "$env:PROD_ARTIFACT"
+                }
+
+                if (!(Test-Path $artifactRoot)) {
+                    New-Item -ItemType Directory -Path $artifactRoot
+                }
+
+                $buildFolder = "$artifactRoot\\build_$build"
+
+                if (!(Test-Path $buildFolder)) {
+                    New-Item -ItemType Directory -Path $buildFolder
+                }
+
+                $zip = "$buildFolder\\artifact.zip"
 
                 Compress-Archive `
                     -Path "$env:PUBLISH_FOLDER\\*" `
                     -DestinationPath $zip `
                     -Force
 
-                Write-Host "Artifact stored: $zip"
+                $info = @"
+Application: StudentPortal
+Environment: $env:ENVIRONMENT
+Version: $version
+Build Number: $build
+Branch: $branch
+Commit: $commit
+Build Date: $date
+"@
+
+                $info | Out-File "$buildFolder\\build-info.txt"
+
+                Write-Host "Artifact stored at $buildFolder"
+
                 '''
             }
         }
@@ -108,21 +144,18 @@ pipeline {
                     $buildToDeploy = "$env:BUILD_NUMBER"
                 }
 
-                $zipPath = "$env:ARTIFACT_STORAGE\\build_$buildToDeploy.zip"
-
-                if (!(Test-Path $zipPath)) {
-                    throw "Artifact not found: $zipPath"
-                }
-
                 if ($envName -eq "DEV") {
 
+                    $artifactFolder = "$env:DEV_ARTIFACT\\build_$buildToDeploy"
                     $siteName = "$env:DEV_SITE"
                     $pool = "$env:DEV_POOL"
                     $path = "$env:DEV_PATH"
                     $port = "$env:DEV_PORT"
 
-                } else {
+                }
+                else {
 
+                    $artifactFolder = "$env:PROD_ARTIFACT\\build_$buildToDeploy"
                     $siteName = "$env:PROD_SITE"
                     $pool = "$env:PROD_POOL"
                     $path = "$env:PROD_PATH"
@@ -130,9 +163,16 @@ pipeline {
 
                 }
 
-                Write-Host "Deploying Build $buildToDeploy to $envName"
+                $zipPath = "$artifactFolder\\artifact.zip"
+
+                if (!(Test-Path $zipPath)) {
+                    throw "Artifact not found: $zipPath"
+                }
+
+                Write-Host "Deploying build $buildToDeploy to $envName"
 
                 if (!(Test-Path "IIS:\\AppPools\\$pool")) {
+                    Write-Host "Creating App Pool $pool"
                     New-WebAppPool -Name $pool
                 }
 
@@ -142,12 +182,13 @@ pipeline {
 
                 if (!(Test-Path "IIS:\\Sites\\$siteName")) {
 
+                    Write-Host "Creating IIS Website $siteName"
+
                     New-Website `
                         -Name $siteName `
                         -Port $port `
                         -PhysicalPath $path `
                         -ApplicationPool $pool
-
                 }
 
                 $state = (Get-WebAppPoolState -Name $pool).Value
@@ -173,7 +214,7 @@ pipeline {
                 Start-WebAppPool $pool
                 Start-Website $siteName
 
-                Write-Host "Deployment completed"
+                Write-Host "Deployment completed successfully"
 
                 '''
             }
@@ -187,7 +228,8 @@ pipeline {
 
                 if ($env:ENVIRONMENT -eq "DEV") {
                     $pool="$env:DEV_POOL"
-                } else {
+                }
+                else {
                     $pool="$env:PROD_POOL"
                 }
 
@@ -196,8 +238,10 @@ pipeline {
                 Write-Host "App Pool State: $state"
 
                 if ($state -ne "Started") {
-                    throw "Deployment failed"
+                    throw "Deployment verification failed"
                 }
+
+                Write-Host "Deployment verified successfully"
 
                 '''
             }
@@ -207,11 +251,11 @@ pipeline {
     post {
 
         success {
-            echo "Deployment successful"
+            echo "Build ${BUILD_NUMBER} deployed successfully."
         }
 
         failure {
-            echo "Deployment failed"
+            echo "Deployment failed. Check logs."
         }
 
     }
