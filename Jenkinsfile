@@ -16,7 +16,7 @@ description: 'Deployment action'
 string(
 name: 'BRANCH',
 defaultValue: 'main',
-description: 'Git branch to build (used only for DEV)'
+description: 'Git branch to build (DEV only)'
 ),
 
 [$class: 'CascadeChoiceParameter',
@@ -36,13 +36,17 @@ def path = "C:/jenkins-artifacts"
 def dir = new File(path)
 
 if(!dir.exists()){
-return ["No Artifacts Found"]
+    return ["NO_ARTIFACT_FOLDER_FOUND"]
 }
 
 def folders = dir.listFiles()
-.findAll { it.isDirectory() }
-.sort { -it.lastModified() }
-.collect { it.name }
+    .findAll { it.isDirectory() }
+    .sort { -it.lastModified() }
+    .collect { it.name }
+
+if(folders.size() == 0){
+    return ["NO_BUILDS_AVAILABLE"]
+}
 
 return folders
 
@@ -81,7 +85,9 @@ PROD_PORT = "8082"
 stages {
 
 stage('Set Build Name') {
+
 steps {
+
 script {
 
 def date = new Date().format("yyyy-MM-dd")
@@ -90,19 +96,27 @@ currentBuild.displayName =
 "#${env.BUILD_NUMBER} - ${params.ENVIRONMENT} - ${date}"
 
 }
+
 }
+
 }
 
 stage('Clean Workspace') {
+
 steps {
+
 deleteDir()
+
 }
+
 }
 
 stage('Checkout Code') {
 
 when {
+
 expression { params.ENVIRONMENT == 'DEV' }
+
 }
 
 steps {
@@ -111,12 +125,15 @@ git branch: "${params.BRANCH}",
 url: "${env.GIT_REPO}"
 
 }
+
 }
 
 stage('Build Artifact') {
 
 when {
+
 expression { params.ENVIRONMENT == 'DEV' }
+
 }
 
 steps {
@@ -163,13 +180,17 @@ $info | Out-File "$buildFolder\\build-info.txt"
 Write-Host "Artifact stored in $buildFolder"
 
 '''
+
 }
+
 }
 
 stage('Deploy') {
 
 when {
+
 expression { params.ACTION == 'DEPLOY' }
+
 }
 
 steps {
@@ -182,7 +203,9 @@ Import-Module WebAdministration
 \$artifactBuild = "${params.ARTIFACT_BUILD}"
 \$artifactRoot = "${env.ARTIFACT_ROOT}"
 
-if([string]::IsNullOrEmpty(\$artifactBuild)){
+if([string]::IsNullOrEmpty(\$artifactBuild) -or
+\$artifactBuild -eq "NO_ARTIFACT_FOLDER_FOUND" -or
+\$artifactBuild -eq "NO_BUILDS_AVAILABLE"){
 
 \$latest = Get-ChildItem \$artifactRoot |
 Where-Object {\$_.PSIsContainer} |
@@ -200,6 +223,11 @@ exit 1
 
 \$folder = Join-Path \$artifactRoot \$artifactBuild
 \$zipPath = "\$folder\\artifact.zip"
+
+if(!(Test-Path \$zipPath)){
+Write-Error "Artifact not found: \$zipPath"
+exit 1
+}
 
 if(\$envName -eq "DEV"){
 
@@ -234,7 +262,9 @@ New-Website `
 
 Stop-WebAppPool \$pool -ErrorAction SilentlyContinue
 
+if(Test-Path "\$path"){
 Remove-Item "\$path\\*" -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 Expand-Archive `
 -Path \$zipPath `
@@ -244,10 +274,12 @@ Expand-Archive `
 Start-WebAppPool \$pool
 Start-Website \$site
 
-Write-Host "Deployment Completed"
+Write-Host "Deployment completed successfully"
 
 """
+
 }
+
 }
 
 stage('Verify Deployment') {
@@ -255,9 +287,13 @@ stage('Verify Deployment') {
 steps {
 
 powershell '''
+
 Import-Module WebAdministration
+
 Write-Host "Deployment successful"
+
 Get-Website
+
 '''
 
 }
