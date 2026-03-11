@@ -13,25 +13,30 @@ choices: ['DEPLOY','ROLLBACK'],
 description: 'Deployment action'
 ),
 
+string(
+name: 'BRANCH',
+defaultValue: 'main',
+description: 'Git branch to build (used only for DEV)'
+),
+
 [$class: 'CascadeChoiceParameter',
 name: 'ARTIFACT_BUILD',
 description: 'Select artifact build',
-referencedParameters: 'ENVIRONMENT',
 choiceType: 'PT_SINGLE_SELECT',
+filterable: true,
 script: [
 $class: 'GroovyScript',
 script: [
 $class: 'SecureGroovyScript',
 sandbox: false,
 script: '''
-def path = ENVIRONMENT == "DEV" ?
-"C:/jenkins-artifacts/DEV" :
-"C:/jenkins-artifacts/PROD"
+
+def path = "C:/jenkins-artifacts"
 
 def dir = new File(path)
 
 if(!dir.exists()){
-return ["No artifacts found"]
+return ["No Artifacts Found"]
 }
 
 def folders = dir.listFiles()
@@ -40,16 +45,11 @@ def folders = dir.listFiles()
 .collect { it.name }
 
 return folders
+
 '''
 ]
 ]
-],
-
-string(
-name: 'BRANCH',
-defaultValue: 'main',
-description: 'Git branch to build'
-)
+]
 
 ])
 ])
@@ -62,8 +62,7 @@ environment {
 
 GIT_REPO = "https://github.com/1MRCV/studentmanagemnt.git"
 
-DEV_ARTIFACT_ROOT = "C:\\jenkins-artifacts\\DEV"
-PROD_ARTIFACT_ROOT = "C:\\jenkins-artifacts\\PROD"
+ARTIFACT_ROOT = "C:\\jenkins-artifacts"
 
 DEV_PATH = "C:\\inetpub\\dev"
 PROD_PATH = "C:\\inetpub\\prod"
@@ -84,8 +83,12 @@ stages {
 stage('Set Build Name') {
 steps {
 script {
+
 def date = new Date().format("yyyy-MM-dd")
-currentBuild.displayName = "#${env.BUILD_NUMBER} - ${params.ENVIRONMENT} - ${date}"
+
+currentBuild.displayName =
+"#${env.BUILD_NUMBER} - ${params.ENVIRONMENT} - ${date}"
+
 }
 }
 }
@@ -97,16 +100,23 @@ deleteDir()
 }
 
 stage('Checkout Code') {
-steps {
-git branch: "${params.BRANCH}",
-url: "${env.GIT_REPO}"
-}
-}
-
-stage('Build DEV Artifact') {
 
 when {
-expression { params.ENVIRONMENT == 'DEV' && params.ACTION == 'DEPLOY' }
+expression { params.ENVIRONMENT == 'DEV' }
+}
+
+steps {
+
+git branch: "${params.BRANCH}",
+url: "${env.GIT_REPO}"
+
+}
+}
+
+stage('Build Artifact') {
+
+when {
+expression { params.ENVIRONMENT == 'DEV' }
 }
 
 steps {
@@ -121,7 +131,7 @@ $build = $env:BUILD_NUMBER
 $date = Get-Date -Format "yyyy-MM-dd"
 $dateTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
-$artifactRoot = "C:\\jenkins-artifacts\\DEV"
+$artifactRoot = "C:\\jenkins-artifacts"
 
 if (!(Test-Path $artifactRoot)) {
 New-Item -ItemType Directory -Path $artifactRoot
@@ -150,6 +160,8 @@ Build Date: $dateTime
 
 $info | Out-File "$buildFolder\\build-info.txt"
 
+Write-Host "Artifact stored in $buildFolder"
+
 '''
 }
 }
@@ -168,50 +180,56 @@ Import-Module WebAdministration
 
 \$envName = "${params.ENVIRONMENT}"
 \$artifactBuild = "${params.ARTIFACT_BUILD}"
+\$artifactRoot = "${env.ARTIFACT_ROOT}"
 
-if(\$envName -eq "DEV"){
-\$artifactRoot = "${env.DEV_ARTIFACT_ROOT}"
-\$siteName="${env.DEV_SITE}"
-\$pool="${env.DEV_POOL}"
-\$path="${env.DEV_PATH}"
-\$port="${env.DEV_PORT}"
-}
-else{
-\$artifactRoot = "${env.PROD_ARTIFACT_ROOT}"
-\$siteName="${env.PROD_SITE}"
-\$pool="${env.PROD_POOL}"
-\$path="${env.PROD_PATH}"
-\$port="${env.PROD_PORT}"
-}
-
-if(\$artifactBuild -eq ""){
+if([string]::IsNullOrEmpty(\$artifactBuild)){
 
 \$latest = Get-ChildItem \$artifactRoot |
 Where-Object {\$_.PSIsContainer} |
 Sort-Object LastWriteTime -Descending |
 Select-Object -First 1
 
+if(\$latest -eq \$null){
+Write-Error "No artifacts found"
+exit 1
+}
+
 \$artifactBuild = \$latest.Name
+
 }
 
 \$folder = Join-Path \$artifactRoot \$artifactBuild
 \$zipPath = "\$folder\\artifact.zip"
 
+if(\$envName -eq "DEV"){
+
+\$site="${env.DEV_SITE}"
+\$pool="${env.DEV_POOL}"
+\$path="${env.DEV_PATH}"
+\$port="${env.DEV_PORT}"
+
+}
+else{
+
+\$site="${env.PROD_SITE}"
+\$pool="${env.PROD_POOL}"
+\$path="${env.PROD_PATH}"
+\$port="${env.PROD_PORT}"
+
+}
+
 if (!(Test-Path "IIS:\\AppPools\\\$pool")) {
 New-WebAppPool -Name \$pool
 }
 
-if (!(Test-Path \$path)) {
-New-Item -ItemType Directory -Path \$path
-}
-
-if (!(Test-Path "IIS:\\Sites\\\$siteName")) {
+if (!(Test-Path "IIS:\\Sites\\\$site")) {
 
 New-Website `
--Name \$siteName `
+-Name \$site `
 -Port \$port `
 -PhysicalPath \$path `
 -ApplicationPool \$pool
+
 }
 
 Stop-WebAppPool \$pool -ErrorAction SilentlyContinue
@@ -224,19 +242,26 @@ Expand-Archive `
 -Force
 
 Start-WebAppPool \$pool
-Start-Website \$siteName
+Start-Website \$site
+
+Write-Host "Deployment Completed"
 
 """
 }
 }
 
 stage('Verify Deployment') {
+
 steps {
+
 powershell '''
 Import-Module WebAdministration
-Write-Host "Deployment completed successfully"
+Write-Host "Deployment successful"
+Get-Website
 '''
+
 }
+
 }
 
 }
