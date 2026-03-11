@@ -1,61 +1,59 @@
-properties([
-  parameters([
-
-    choice(
-      name: 'ENVIRONMENT',
-      choices: ['DEV','PRODUCTION'],
-      description: 'Select environment'
-    ),
-
-    choice(
-      name: 'ACTION',
-      choices: ['DEPLOY','ROLLBACK'],
-      description: 'Deployment action'
-    ),
-
-    [$class: 'CascadeChoiceParameter',
-      name: 'ARTIFACT_BUILD',
-      description: 'Select artifact',
-      referencedParameters: 'ENVIRONMENT',
-      choiceType: 'PT_SINGLE_SELECT',
-      script: [
-        $class: 'GroovyScript',
-        sandbox: false,
-        script: """
-
-        def path = ENVIRONMENT == "DEV" ?
-                   "C:/jenkins-artifacts/DEV" :
-                   "C:/jenkins-artifacts/PROD"
-
-        def dir = new File(path)
-
-        if(!dir.exists()){
-            return ["No artifacts found"]
-        }
-
-        def folders = dir.listFiles()
-            .findAll { it.isDirectory() }
-            .sort { -it.lastModified() }
-            .collect { it.name }
-
-        return folders
-
-        """
-      ]
-    ],
-
-    string(
-      name: 'BRANCH',
-      defaultValue: 'main',
-      description: 'Git branch'
-    )
-
-  ])
-])
-
 pipeline {
 
     agent { label 'windows-agent' }
+
+    parameters {
+
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['DEV','PRODUCTION'],
+            description: 'Select environment'
+        )
+
+        choice(
+            name: 'ACTION',
+            choices: ['DEPLOY','ROLLBACK'],
+            description: 'Deployment action'
+        )
+
+        [$class: 'CascadeChoiceParameter',
+            name: 'ARTIFACT_BUILD',
+            description: 'Select artifact to deploy',
+            referencedParameters: 'ENVIRONMENT',
+            choiceType: 'PT_SINGLE_SELECT',
+            script: [
+                $class: 'GroovyScript',
+                script: [
+                    $class: 'SecureGroovyScript',
+                    script: '''
+                        def path = ENVIRONMENT == "DEV" ?
+                                   "C:/jenkins-artifacts/DEV" :
+                                   "C:/jenkins-artifacts/PROD"
+
+                        def dir = new File(path)
+
+                        if(!dir.exists()){
+                            return ["No artifacts found"]
+                        }
+
+                        def folders = dir.listFiles()
+                            .findAll { it.isDirectory() }
+                            .sort { -it.lastModified() }
+                            .collect { it.name }
+
+                        return folders
+                    ''',
+                    sandbox: false
+                ]
+            ]
+        ]
+
+        string(
+            name: 'BRANCH',
+            defaultValue: 'main',
+            description: 'Git branch to build'
+        )
+    }
 
     environment {
 
@@ -97,7 +95,7 @@ pipeline {
         stage('Checkout Code') {
             steps {
                 git branch: "${params.BRANCH}",
-                    url: "${env.GIT_REPO}"
+                url: "${env.GIT_REPO}"
             }
         }
 
@@ -140,7 +138,7 @@ pipeline {
             }
         }
 
-        stage('Create DEV Artifact') {
+        stage('Create Artifact Version') {
 
             when {
                 expression {
@@ -194,6 +192,10 @@ Build Date: $dateTime
         }
 
         stage('Deploy Artifact') {
+
+            when {
+                expression { params.ACTION == 'DEPLOY' }
+            }
 
             steps {
 
@@ -282,6 +284,10 @@ Build Date: $dateTime
 
         stage('Verify Deployment') {
 
+            when {
+                expression { params.ACTION == 'DEPLOY' }
+            }
+
             steps {
 
                 powershell """
@@ -307,6 +313,7 @@ Build Date: $dateTime
 
             }
         }
+
     }
 
     post {
@@ -318,5 +325,6 @@ Build Date: $dateTime
         failure {
             echo "Deployment failed. Check logs."
         }
+
     }
 }
