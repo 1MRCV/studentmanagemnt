@@ -33,8 +33,9 @@ pipeline {
 
         GIT_REPO = "https://github.com/1MRCV/studentmanagemnt.git"
 
-        DEV_ARTIFACT = "C:\\jenkins-artifacts\\DEV"
-        PROD_ARTIFACT = "C:\\jenkins-artifacts\\PROD"
+        PUBLISH_FOLDER = "publish"
+
+        ARTIFACT_ROOT = "C:\\jenkins-artifacts"
 
         DEV_PATH = "C:\\inetpub\\dev"
         PROD_PATH = "C:\\inetpub\\prod"
@@ -55,54 +56,58 @@ pipeline {
             steps {
                 script {
                     def date = new Date().format("yyyy-MM-dd")
-                    currentBuild.displayName =
-                    "#${env.BUILD_NUMBER} - ${params.ENVIRONMENT} - ${date}"
+                    currentBuild.displayName = "#${env.BUILD_NUMBER} - ${params.ENVIRONMENT} - ${date}"
                 }
             }
         }
 
         stage('Clean Workspace') {
-            steps { deleteDir() }
+            steps {
+                deleteDir()
+            }
         }
 
         stage('Checkout Code') {
             steps {
                 git branch: "${params.BRANCH}",
-                url: "${env.GIT_REPO}"
+                    url: "${env.GIT_REPO}"
             }
         }
 
         stage('Restore Dependencies') {
+
             when {
                 expression {
-                    params.ACTION == 'DEPLOY' &&
-                    params.ENVIRONMENT == 'DEV'
+                    params.ACTION == 'DEPLOY' && params.ENVIRONMENT == 'DEV'
                 }
             }
+
             steps {
                 powershell 'dotnet restore'
             }
         }
 
         stage('Build Application') {
+
             when {
                 expression {
-                    params.ACTION == 'DEPLOY' &&
-                    params.ENVIRONMENT == 'DEV'
+                    params.ACTION == 'DEPLOY' && params.ENVIRONMENT == 'DEV'
                 }
             }
+
             steps {
                 powershell 'dotnet build --configuration Release'
             }
         }
 
         stage('Publish Website') {
+
             when {
                 expression {
-                    params.ACTION == 'DEPLOY' &&
-                    params.ENVIRONMENT == 'DEV'
+                    params.ACTION == 'DEPLOY' && params.ENVIRONMENT == 'DEV'
                 }
             }
+
             steps {
                 powershell 'dotnet publish StudentPortal.Web/StudentPortal.Web.csproj -c Release -o publish'
             }
@@ -112,8 +117,7 @@ pipeline {
 
             when {
                 expression {
-                    params.ACTION == 'DEPLOY' &&
-                    params.ENVIRONMENT == 'DEV'
+                    params.ACTION == 'DEPLOY' && params.ENVIRONMENT == 'DEV'
                 }
             }
 
@@ -125,7 +129,7 @@ pipeline {
                 $date = Get-Date -Format "yyyy-MM-dd"
                 $dateTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
-                $artifactRoot = "C:\\jenkins-artifacts\\DEV"
+                $artifactRoot = "C:\\jenkins-artifacts"
 
                 if (!(Test-Path $artifactRoot)) {
                     New-Item -ItemType Directory -Path $artifactRoot
@@ -171,12 +175,16 @@ Build Date: $dateTime
                 Import-Module WebAdministration
 
                 \$envName = "${params.ENVIRONMENT}"
+                \$artifactBuild = "${params.ARTIFACT_BUILD}"
 
-                \$artifactBuild = "${params.ARTIFACT_BUILD}".Split("|")[0].Trim()
+                if(\$artifactBuild -ne ""){
+                    \$artifactBuild = \$artifactBuild.Split("|")[0].Trim()
+                }
+
+                \$artifactRoot = "${env.ARTIFACT_ROOT}"
 
                 if(\$envName -eq "DEV"){
 
-                    \$artifactRoot="${env.DEV_ARTIFACT}"
                     \$siteName="${env.DEV_SITE}"
                     \$pool="${env.DEV_POOL}"
                     \$path="${env.DEV_PATH}"
@@ -185,7 +193,6 @@ Build Date: $dateTime
                 }
                 else{
 
-                    \$artifactRoot="${env.PROD_ARTIFACT}"
                     \$siteName="${env.PROD_SITE}"
                     \$pool="${env.PROD_POOL}"
                     \$path="${env.PROD_PATH}"
@@ -299,6 +306,5 @@ Build Date: $dateTime
         failure {
             echo "Deployment failed. Check logs."
         }
-
     }
 }
