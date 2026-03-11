@@ -15,28 +15,31 @@ properties([
 
     [$class: 'CascadeChoiceParameter',
       name: 'ARTIFACT_BUILD',
-      description: 'Select artifact to deploy',
+      description: 'Select artifact',
       referencedParameters: 'ENVIRONMENT',
       choiceType: 'PT_SINGLE_SELECT',
       script: [
         $class: 'GroovyScript',
         sandbox: false,
         script: """
-            def env = ENVIRONMENT
-            def path = "C:/jenkins-artifacts"
 
-            def dir = new File(path)
+        def path = ENVIRONMENT == "DEV" ?
+                   "C:/jenkins-artifacts/DEV" :
+                   "C:/jenkins-artifacts/PROD"
 
-            if(!dir.exists()){
-                return ["No artifacts found"]
-            }
+        def dir = new File(path)
 
-            def folders = dir.listFiles()
-                .findAll { it.isDirectory() }
-                .sort { -it.lastModified() }
-                .collect { it.name }
+        if(!dir.exists()){
+            return ["No artifacts found"]
+        }
 
-            return folders
+        def folders = dir.listFiles()
+            .findAll { it.isDirectory() }
+            .sort { -it.lastModified() }
+            .collect { it.name }
+
+        return folders
+
         """
       ]
     ],
@@ -44,19 +47,22 @@ properties([
     string(
       name: 'BRANCH',
       defaultValue: 'main',
-      description: 'Git branch to build'
+      description: 'Git branch'
     )
 
   ])
 ])
 
+pipeline {
+
+    agent { label 'windows-agent' }
+
     environment {
 
         GIT_REPO = "https://github.com/1MRCV/studentmanagemnt.git"
 
-        PUBLISH_FOLDER = "publish"
-
-        ARTIFACT_ROOT = "C:\\jenkins-artifacts"
+        DEV_ARTIFACT_ROOT = "C:\\jenkins-artifacts\\DEV"
+        PROD_ARTIFACT_ROOT = "C:\\jenkins-artifacts\\PROD"
 
         DEV_PATH = "C:\\inetpub\\dev"
         PROD_PATH = "C:\\inetpub\\prod"
@@ -134,7 +140,7 @@ properties([
             }
         }
 
-        stage('Create Artifact Version') {
+        stage('Create DEV Artifact') {
 
             when {
                 expression {
@@ -150,7 +156,7 @@ properties([
                 $date = Get-Date -Format "yyyy-MM-dd"
                 $dateTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
-                $artifactRoot = "C:\\jenkins-artifacts"
+                $artifactRoot = "C:\\jenkins-artifacts\\DEV"
 
                 if (!(Test-Path $artifactRoot)) {
                     New-Item -ItemType Directory -Path $artifactRoot
@@ -198,32 +204,24 @@ Build Date: $dateTime
                 \$envName = "${params.ENVIRONMENT}"
                 \$artifactBuild = "${params.ARTIFACT_BUILD}"
 
-                if(\$artifactBuild -ne ""){
-                    \$artifactBuild = \$artifactBuild.Split("|")[0].Trim()
-                }
-
-                \$artifactRoot = "${env.ARTIFACT_ROOT}"
-
                 if(\$envName -eq "DEV"){
-
+                    \$artifactRoot = "${env.DEV_ARTIFACT_ROOT}"
                     \$siteName="${env.DEV_SITE}"
                     \$pool="${env.DEV_POOL}"
                     \$path="${env.DEV_PATH}"
                     \$port="${env.DEV_PORT}"
-
                 }
                 else{
-
+                    \$artifactRoot = "${env.PROD_ARTIFACT_ROOT}"
                     \$siteName="${env.PROD_SITE}"
                     \$pool="${env.PROD_POOL}"
                     \$path="${env.PROD_PATH}"
                     \$port="${env.PROD_PORT}"
-
                 }
 
                 if(\$artifactBuild -eq ""){
 
-                    Write-Host "No artifact specified. Selecting latest build..."
+                    Write-Host "Selecting latest artifact..."
 
                     \$latest = Get-ChildItem \$artifactRoot |
                               Where-Object {\$_.PSIsContainer} |
@@ -231,20 +229,13 @@ Build Date: $dateTime
                               Select-Object -First 1
 
                     if(!\$latest){
-                        throw "No artifacts found in \$artifactRoot"
+                        throw "No artifacts found"
                     }
 
                     \$artifactBuild = \$latest.Name
-
-                    Write-Host "Latest artifact selected: \$artifactBuild"
                 }
 
                 \$folder = Join-Path \$artifactRoot \$artifactBuild
-
-                if(!(Test-Path \$folder)){
-                    throw "Artifact not found: \$artifactBuild"
-                }
-
                 \$zipPath = "\$folder\\artifact.zip"
 
                 Write-Host "Deploying \$artifactBuild"
