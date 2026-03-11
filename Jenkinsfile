@@ -31,24 +31,30 @@ $class: 'SecureGroovyScript',
 sandbox: false,
 script: '''
 
-def path = "C:/jenkins-artifacts"
+import jenkins.model.*
 
-def dir = new File(path)
+def job = Jenkins.instance.getItemByFullName("Jenkins-only")
 
-if(!dir.exists()){
-    return ["NO_ARTIFACT_FOLDER_FOUND"]
+if(job == null){
+    return ["JOB_NOT_FOUND"]
 }
 
-def folders = dir.listFiles()
-    .findAll { it.isDirectory() }
-    .sort { -it.lastModified() }
-    .collect { it.name }
+def builds = job.getBuilds()
 
-if(folders.size() == 0){
-    return ["NO_BUILDS_AVAILABLE"]
+def list = []
+
+for (b in builds) {
+
+    if(b.getResult() != null && b.getResult().toString() == "SUCCESS"){
+
+        def date = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm")
+                .format(b.getTime())
+
+        list.add("Build_${b.getNumber()} | ${date}")
+    }
 }
 
-return folders
+return list
 
 '''
 ]
@@ -114,9 +120,7 @@ deleteDir()
 stage('Checkout Code') {
 
 when {
-
 expression { params.ENVIRONMENT == 'DEV' }
-
 }
 
 steps {
@@ -131,9 +135,7 @@ url: "${env.GIT_REPO}"
 stage('Build Artifact') {
 
 when {
-
 expression { params.ENVIRONMENT == 'DEV' }
-
 }
 
 steps {
@@ -188,9 +190,7 @@ Write-Host "Artifact stored in $buildFolder"
 stage('Deploy') {
 
 when {
-
 expression { params.ACTION == 'DEPLOY' }
-
 }
 
 steps {
@@ -199,37 +199,28 @@ powershell """
 
 Import-Module WebAdministration
 
-\$envName = "${params.ENVIRONMENT}"
-\$artifactBuild = "${params.ARTIFACT_BUILD}"
+\$selected = "${params.ARTIFACT_BUILD}"
+\$buildNumber = \$selected.Split("|")[0].Replace("Build_","").Trim()
+
 \$artifactRoot = "${env.ARTIFACT_ROOT}"
 
-if([string]::IsNullOrEmpty(\$artifactBuild) -or
-\$artifactBuild -eq "NO_ARTIFACT_FOLDER_FOUND" -or
-\$artifactBuild -eq "NO_BUILDS_AVAILABLE"){
-
-\$latest = Get-ChildItem \$artifactRoot |
-Where-Object {\$_.PSIsContainer} |
-Sort-Object LastWriteTime -Descending |
+\$folder = Get-ChildItem \$artifactRoot |
+Where-Object { \$_.Name -like "build_\${buildNumber}_*" } |
 Select-Object -First 1
 
-if(\$latest -eq \$null){
-Write-Error "No artifacts found"
+if(\$folder -eq \$null){
+Write-Error "Artifact folder not found for build \$buildNumber"
 exit 1
 }
 
-\$artifactBuild = \$latest.Name
-
-}
-
-\$folder = Join-Path \$artifactRoot \$artifactBuild
 \$zipPath = "\$folder\\artifact.zip"
 
 if(!(Test-Path \$zipPath)){
-Write-Error "Artifact not found: \$zipPath"
+Write-Error "Artifact zip not found"
 exit 1
 }
 
-if(\$envName -eq "DEV"){
+if("${params.ENVIRONMENT}" -eq "DEV"){
 
 \$site="${env.DEV_SITE}"
 \$pool="${env.DEV_POOL}"
