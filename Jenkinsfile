@@ -145,12 +145,18 @@ stages {
                 -DestinationPath $zip `
                 -Force
 
+            # Get Git info
+            $commit = git rev-parse --short HEAD
+            $branch = git rev-parse --abbrev-ref HEAD
+
             $info = @"
 ```
 
 Application: StudentPortal
 Environment: DEV
 Build Number: $build
+Branch: $branch
+Commit: $commit
 Build Date: $dateTime
 "@
 
@@ -172,7 +178,9 @@ Build Date: $dateTime
             Import-Module WebAdministration
 
             \$envName = "${params.ENVIRONMENT}"
-            \$artifactBuild = "${params.ARTIFACT_BUILD}"
+
+            # Extract artifact folder name if dropdown contains extra info
+            \$artifactBuild = "${params.ARTIFACT_BUILD}".Split("|")[0].Trim()
 
             if(\$envName -eq "DEV"){
 
@@ -300,6 +308,7 @@ post {
     failure {
         echo "Deployment failed. Check logs."
     }
+
 }
 ```
 
