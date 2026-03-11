@@ -66,7 +66,9 @@ pipeline {
         }
 
         stage('Clean Workspace') {
-            steps { deleteDir() }
+            steps {
+                deleteDir()
+            }
         }
 
         stage('Checkout Code') {
@@ -77,23 +79,47 @@ pipeline {
         }
 
         stage('Restore Dependencies') {
-            when { expression { params.ACTION == 'DEPLOY' && params.ENVIRONMENT == 'DEV' } }
-            steps { powershell 'dotnet restore' }
+            when {
+                expression {
+                    params.ACTION == 'DEPLOY' && params.ENVIRONMENT == 'DEV'
+                }
+            }
+            steps {
+                powershell 'dotnet restore'
+            }
         }
 
         stage('Build Application') {
-            when { expression { params.ACTION == 'DEPLOY' && params.ENVIRONMENT == 'DEV' } }
-            steps { powershell 'dotnet build --configuration Release' }
+            when {
+                expression {
+                    params.ACTION == 'DEPLOY' && params.ENVIRONMENT == 'DEV'
+                }
+            }
+            steps {
+                powershell 'dotnet build --configuration Release'
+            }
         }
 
         stage('Publish Website') {
-            when { expression { params.ACTION == 'DEPLOY' && params.ENVIRONMENT == 'DEV' } }
-            steps { powershell 'dotnet publish -c Release -o $env:PUBLISH_FOLDER' }
+            when {
+                expression {
+                    params.ACTION == 'DEPLOY' && params.ENVIRONMENT == 'DEV'
+                }
+            }
+            steps {
+                powershell 'dotnet publish StudentPortal.Web/StudentPortal.Web.csproj -c Release -o publish'
+            }
         }
 
         stage('Create Artifact Version') {
-            when { expression { params.ACTION == 'DEPLOY' && params.ENVIRONMENT == 'DEV' } }
+            when {
+                expression {
+                    params.ACTION == 'DEPLOY' && params.ENVIRONMENT == 'DEV'
+                }
+            }
+
             steps {
+
                 powershell '''
 
                 $build = $env:BUILD_NUMBER
@@ -104,7 +130,7 @@ pipeline {
                 $commit = git rev-parse --short HEAD
                 $branch = git rev-parse --abbrev-ref HEAD
 
-                $artifactRoot = "$env:DEV_ARTIFACT"
+                $artifactRoot = "C:\\jenkins-artifacts\\DEV"
 
                 if (!(Test-Path $artifactRoot)) {
                     New-Item -ItemType Directory -Path $artifactRoot
@@ -119,7 +145,7 @@ pipeline {
                 $zip = "$buildFolder\\artifact.zip"
 
                 Compress-Archive `
-                    -Path "$env:PUBLISH_FOLDER\\*" `
+                    -Path "publish\\*" `
                     -DestinationPath $zip `
                     -Force
 
@@ -142,132 +168,146 @@ Build Date: $dateTime
         }
 
         stage('Promote DEV Artifact to PROD') {
-            when { expression { params.ENVIRONMENT == 'PRODUCTION' && params.ACTION == 'DEPLOY' } }
+
+            when {
+                expression {
+                    params.ENVIRONMENT == 'PRODUCTION' &&
+                    params.ACTION == 'DEPLOY'
+                }
+            }
+
             steps {
-                powershell '''
 
-                $devRoot = "C:\\jenkins-artifacts\\DEV"
-                $prodRoot = "C:\\jenkins-artifacts\\PROD"
+                powershell """
 
-                $artifact = "$devRoot\\$env:ARTIFACT_BUILD"
+                \$artifact = "C:\\jenkins-artifacts\\DEV\\${params.ARTIFACT_BUILD}"
+                \$target   = "C:\\jenkins-artifacts\\PROD\\${params.ARTIFACT_BUILD}"
 
-                if(!(Test-Path $artifact)){
+                if(!(Test-Path \$artifact)){
                     throw "DEV artifact not found"
                 }
 
-                $target = "$prodRoot\\$env:ARTIFACT_BUILD"
-
-                Copy-Item $artifact -Destination $target -Recurse -Force
+                Copy-Item \$artifact -Destination \$target -Recurse -Force
 
                 Write-Host "Artifact promoted from DEV to PROD"
 
-                '''
+                """
+
             }
         }
 
         stage('Deploy Artifact') {
+
             steps {
-                powershell '''
+
+                powershell """
 
                 Import-Module WebAdministration
 
-                $envName = "$env:ENVIRONMENT"
-                $artifactBuild = "$env:ARTIFACT_BUILD"
+                \$envName = "${params.ENVIRONMENT}"
+                \$artifactBuild = "${params.ARTIFACT_BUILD}"
 
-                if($envName -eq "DEV"){
+                if(\$envName -eq "DEV"){
 
-                    $artifactRoot="$env:DEV_ARTIFACT"
-                    $siteName="$env:DEV_SITE"
-                    $pool="$env:DEV_POOL"
-                    $path="$env:DEV_PATH"
-                    $port="$env:DEV_PORT"
+                    \$artifactRoot="C:\\jenkins-artifacts\\DEV"
+                    \$siteName="${env.DEV_SITE}"
+                    \$pool="${env.DEV_POOL}"
+                    \$path="${env.DEV_PATH}"
+                    \$port="${env.DEV_PORT}"
 
                 } else {
 
-                    $artifactRoot="$env:PROD_ARTIFACT"
-                    $siteName="$env:PROD_SITE"
-                    $pool="$env:PROD_POOL"
-                    $path="$env:PROD_PATH"
-                    $port="$env:PROD_PORT"
+                    \$artifactRoot="C:\\jenkins-artifacts\\PROD"
+                    \$siteName="${env.PROD_SITE}"
+                    \$pool="${env.PROD_POOL}"
+                    \$path="${env.PROD_PATH}"
+                    \$port="${env.PROD_PORT}"
 
                 }
 
-                $folder = Get-ChildItem $artifactRoot |
-                          Where-Object {$_.Name -eq $artifactBuild} |
-                          Select-Object -First 1
-
-                if(!$folder){
-                    throw "Artifact not found"
+                if(\$artifactBuild -eq ""){
+                    throw "Artifact name must be provided"
                 }
 
-                $zipPath = "$($folder.FullName)\\artifact.zip"
+                \$folder = Join-Path \$artifactRoot \$artifactBuild
 
-                Write-Host "Deploying $artifactBuild"
-
-                if (!(Test-Path "IIS:\\AppPools\\$pool")) {
-                    New-WebAppPool -Name $pool
+                if(!(Test-Path \$folder)){
+                    throw "Artifact not found: \$artifactBuild"
                 }
 
-                if (!(Test-Path $path)) {
-                    New-Item -ItemType Directory -Path $path
+                \$zipPath = "\$folder\\artifact.zip"
+
+                Write-Host "Deploying \$artifactBuild"
+
+                if (!(Test-Path "IIS:\\AppPools\\\$pool")) {
+                    New-WebAppPool -Name \$pool
                 }
 
-                if (!(Test-Path "IIS:\\Sites\\$siteName")) {
+                if (!(Test-Path \$path)) {
+                    New-Item -ItemType Directory -Path \$path
+                }
+
+                if (!(Test-Path "IIS:\\Sites\\\$siteName")) {
 
                     New-Website `
-                        -Name $siteName `
-                        -Port $port `
-                        -PhysicalPath $path `
-                        -ApplicationPool $pool
+                        -Name \$siteName `
+                        -Port \$port `
+                        -PhysicalPath \$path `
+                        -ApplicationPool \$pool
                 }
 
-                $state = (Get-WebAppPoolState -Name $pool).Value
+                \$state = (Get-WebAppPoolState -Name \$pool).Value
 
-                if ($state -eq "Started") {
-                    Stop-WebAppPool $pool
+                if (\$state -eq "Started") {
+                    Stop-WebAppPool \$pool
                     Start-Sleep -Seconds 2
                 }
 
-                Remove-Item "$path\\*" -Recurse -Force -ErrorAction SilentlyContinue
+                Remove-Item "\$path\\*" -Recurse -Force -ErrorAction SilentlyContinue
 
                 Expand-Archive `
-                    -Path $zipPath `
-                    -DestinationPath $path `
+                    -Path \$zipPath `
+                    -DestinationPath \$path `
                     -Force
 
-                Start-WebAppPool $pool
-                Start-Website $siteName
+                Start-WebAppPool \$pool
+                Start-Website \$siteName
 
                 Write-Host "Deployment completed"
 
-                '''
+                """
+
             }
         }
 
         stage('Verify Deployment') {
+
             steps {
-                powershell '''
+
+                powershell """
 
                 Import-Module WebAdministration
 
-                if ($env:ENVIRONMENT -eq "DEV") {
-                    $pool="$env:DEV_POOL"
+                if("${params.ENVIRONMENT}" -eq "DEV"){
+                    \$pool="${env.DEV_POOL}"
                 }
-                else {
-                    $pool="$env:PROD_POOL"
+                else{
+                    \$pool="${env.PROD_POOL}"
                 }
 
-                $state = (Get-WebAppPoolState -Name $pool).Value
+                \$state = (Get-WebAppPoolState -Name \$pool).Value
 
-                Write-Host "App Pool State: $state"
+                Write-Host "App Pool State: \$state"
 
-                if ($state -ne "Started") {
+                if (\$state -ne "Started") {
                     throw "Deployment verification failed"
                 }
 
-                '''
+                """
+
             }
         }
+
     }
 
     post {
@@ -281,4 +321,5 @@ Build Date: $dateTime
         }
 
     }
+
 }
