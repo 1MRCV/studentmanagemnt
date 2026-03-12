@@ -33,7 +33,7 @@ script: '''
 
 import jenkins.model.*
 
-def job = Jenkins.instance.getItemByFullName("Jenkins-only")
+def job = Jenkins.instance.getItemByFullName(JOB_NAME)
 
 if(job == null){
     return ["JOB_NOT_FOUND"]
@@ -74,8 +74,8 @@ GIT_REPO = "https://github.com/1MRCV/studentmanagemnt.git"
 
 ARTIFACT_ROOT = "C:\\jenkins-artifacts"
 
-DEV_PATH = "C:\\inetpub\\dev"
-PROD_PATH = "C:\\inetpub\\prod"
+DEV_PATH = "C:\\inetpub\\studentportal\\dev"
+PROD_PATH = "C:\\inetpub\\studentportal\\prod"
 
 DEV_SITE = "student-dev"
 PROD_SITE = "student-prod"
@@ -120,7 +120,10 @@ deleteDir()
 stage('Checkout Code') {
 
 when {
+allOf {
 expression { params.ENVIRONMENT == 'DEV' }
+expression { params.ACTION == 'DEPLOY' }
+}
 }
 
 steps {
@@ -135,7 +138,10 @@ url: "${env.GIT_REPO}"
 stage('Build Artifact') {
 
 when {
+allOf {
 expression { params.ENVIRONMENT == 'DEV' }
+expression { params.ACTION == 'DEPLOY' }
+}
 }
 
 steps {
@@ -190,7 +196,7 @@ Write-Host "Artifact stored in $buildFolder"
 stage('Deploy') {
 
 when {
-expression { params.ACTION == 'DEPLOY' }
+expression { params.ACTION == 'DEPLOY' || params.ACTION == 'ROLLBACK' }
 }
 
 steps {
@@ -205,7 +211,7 @@ Import-Module WebAdministration
 \$artifactRoot = "${env.ARTIFACT_ROOT}"
 
 \$folder = Get-ChildItem \$artifactRoot |
-Where-Object { \$_.Name -like "build_\${buildNumber}_*" } |
+Where-Object { \$_.Name.StartsWith("build_\${buildNumber}_") } |
 Select-Object -First 1
 
 if(\$folder -eq \$null){
