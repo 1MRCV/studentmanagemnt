@@ -3,25 +3,35 @@ properties([
 
     choice(
       name: 'ENVIRONMENT',
-      choices: ['DEV', 'QA', 'STAGING', 'PRODUCTION'],
+      choices: ['DEV', 'PRODUCTION'],
       description: 'Target deployment environment'
     ),
 
     choice(
       name: 'ACTION',
       choices: ['DEPLOY', 'ROLLBACK'],
-      description: 'Select action'
+      description: 'Select action — ROLLBACK redeploys the selected build'
     ),
 
     string(
       name: 'BRANCH',
       defaultValue: 'main',
-      description: 'Git branch to build — used only when ENVIRONMENT=DEV and ACTION=DEPLOY'
+      description: 'Git branch to build — only used when ENVIRONMENT=DEV, ACTION=DEPLOY'
     ),
 
+    // ── Artifact dropdown ──────────────────────────────────────────────
+    // Reads successful DEV builds from Jenkins API.
+    // Works regardless of where agents are — runs on Jenkins controller.
+    // Shows: Build_42 | 2026-03-12 06:22 | main
+    //
+    // WHY Jenkins API and NOT C:\jenkins-artifacts\DEV:
+    //   Active Choices script runs on the Ubuntu Jenkins controller.
+    //   The controller cannot read C:\ paths on the Windows agent.
+    //   Jenkins API is always accessible from the controller.
+    // ──────────────────────────────────────────────────────────────────
     [$class: 'CascadeChoiceParameter',
       name: 'ARTIFACT_BUILD',
-      description: 'Select the build to deploy (shows all successful DEV builds)',
+      description: 'Select build to deploy (shows all successful DEV builds)',
       choiceType: 'PT_SINGLE_SELECT',
       filterable: true,
       script: [
@@ -32,27 +42,34 @@ properties([
           script: '''
             import jenkins.model.Jenkins
 
-            // Reads directly from Jenkins — works regardless of where agents are
             def job = Jenkins.instance.getItemByFullName("Jenkins-only")
 
             if (job == null) {
-              return ["ERROR: Job 'Jenkins-only' not found"]
+              return ["ERROR: Job 'Jenkins-only' not found in Jenkins"]
             }
 
             def list = []
 
             job.getBuilds().each { build ->
+              // Only include successful DEV DEPLOY builds
+              // (these are the builds that actually created artifacts)
               if (build.getResult()?.toString() == "SUCCESS") {
-                def date = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm").format(build.getTime())
-                def env   = build.getEnvironment()
-                def branch = env?.get("GIT_BRANCH") ?: "unknown"
-                // Strip remote prefix e.g. "origin/main" -> "main"
-                branch = branch.replaceAll("^origin/", "")
-                list << "Build_${build.getNumber()} | ${date} | ${branch}"
+                def params = build.getAction(hudson.model.ParametersAction)
+                def envParam = params?.getParameter("ENVIRONMENT")?.getValue()
+                def actParam = params?.getParameter("ACTION")?.getValue()
+
+                if (envParam == "DEV" && actParam == "DEPLOY") {
+                  def date   = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm").format(build.getTime())
+                  def branch = build.getEnvironment()?.get("GIT_BRANCH") ?: "unknown"
+                  branch     = branch.replaceAll("^origin/", "")
+                  list << "Build_${build.getNumber()} | ${date} | ${branch}"
+                }
               }
             }
 
-            return list.isEmpty() ? ["No successful builds yet — run a DEV build first"] : list
+            return list.isEmpty()
+              ? ["No DEV builds yet — run ENVIRONMENT=DEV, ACTION=DEPLOY first"]
+              : list
           '''
         ]
       ]
@@ -66,39 +83,32 @@ pipeline {
   agent { label 'windows-agent' }
 
   environment {
-    GIT_REPO      = 'https://github.com/1MRCV/studentmanagemnt.git'
-    ARTIFACT_ROOT = 'C:\\jenkins-artifacts'
+    GIT_REPO           = 'https://github.com/1MRCV/studentmanagemnt.git'
 
-    // IIS deployment paths
-    DEV_PATH      = 'C:\\inetpub\\studentportal\\dev'
-    QA_PATH       = 'C:\\inetpub\\studentportal\\qa'
-    STAGING_PATH  = 'C:\\inetpub\\studentportal\\staging'
-    PROD_PATH     = 'C:\\inetpub\\studentportal\\prod'
+    // Artifact folders on Windows agent
+    DEV_ARTIFACT_ROOT  = 'C:\\jenkins-artifacts\\DEV'
+    PROD_ARTIFACT_ROOT = 'C:\\jenkins-artifacts\\PROD'
+
+    // IIS deploy paths
+    DEV_PATH           = 'C:\\inetpub\\dev'
+    PROD_PATH          = 'C:\\inetpub\\prod'
 
     // IIS site names
-    DEV_SITE      = 'student-dev'
-    QA_SITE       = 'student-qa'
-    STAGING_SITE  = 'student-staging'
-    PROD_SITE     = 'student-prod'
+    DEV_SITE           = 'student-dev'
+    PROD_SITE          = 'student-prod'
 
     // IIS app pool names
-    DEV_POOL      = 'student-dev-pool'
-    QA_POOL       = 'student-qa-pool'
-    STAGING_POOL  = 'student-staging-pool'
-    PROD_POOL     = 'student-prod-pool'
+    DEV_POOL           = 'student-dev-pool'
+    PROD_POOL          = 'student-prod-pool'
 
     // Ports
-    DEV_PORT      = '8081'
-    QA_PORT       = '8082'
-    STAGING_PORT  = '8083'
-    PROD_PORT     = '8084'
+    DEV_PORT           = '8081'
+    PROD_PORT          = '8082'
   }
 
   stages {
 
-    // ─────────────────────────────────────────────
-    // Label the build in Jenkins UI
-    // ─────────────────────────────────────────────
+    // ── Label the build in Jenkins UI ─────────────────────────────────
     stage('Set Build Name') {
       steps {
         script {
@@ -108,14 +118,12 @@ pipeline {
       }
     }
 
-    // ─────────────────────────────────────────────
-    // Only clean + checkout when building DEV
-    // ─────────────────────────────────────────────
+    // ── Only for DEV DEPLOY ────────────────────────────────────────────
     stage('Clean Workspace') {
       when {
         allOf {
           expression { params.ENVIRONMENT == 'DEV' }
-          expression { params.ACTION       == 'DEPLOY' }
+          expression { params.ACTION      == 'DEPLOY' }
         }
       }
       steps {
@@ -127,12 +135,12 @@ pipeline {
       when {
         allOf {
           expression { params.ENVIRONMENT == 'DEV' }
-          expression { params.ACTION       == 'DEPLOY' }
+          expression { params.ACTION      == 'DEPLOY' }
         }
       }
       steps {
-        // gitTool 'Git-Windows' tells Jenkins to use the Windows git.exe
-        // Configure this in: Manage Jenkins > Global Tool Configuration > Git
+        // gitTool: 'Git-Windows' — configure in:
+        // Manage Jenkins > Global Tool Configuration > Git
         // Name: Git-Windows | Path: C:\Program Files\Git\cmd\git.exe
         checkout([
           $class: 'GitSCM',
@@ -143,15 +151,11 @@ pipeline {
       }
     }
 
-    // ─────────────────────────────────────────────
-    // Build .NET app and store versioned artifact
-    // Only runs for DEV deploys
-    // ─────────────────────────────────────────────
     stage('Build & Create Artifact') {
       when {
         allOf {
           expression { params.ENVIRONMENT == 'DEV' }
-          expression { params.ACTION       == 'DEPLOY' }
+          expression { params.ACTION      == 'DEPLOY' }
         }
       }
       steps {
@@ -163,21 +167,19 @@ pipeline {
           $build    = $env:BUILD_NUMBER
           $date     = Get-Date -Format "yyyy-MM-dd"
           $dateTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-          $root     = "C:\\jenkins-artifacts"
 
-          # Create root if missing
+          # Store artifact in DEV subfolder
+          $root = "C:\\jenkins-artifacts\\DEV"
+
           if (!(Test-Path $root)) {
             New-Item -ItemType Directory -Path $root -Force | Out-Null
           }
 
-          # Versioned folder: build_42_2026-03-12
           $folder = "$root\\build_${build}_$date"
           New-Item -ItemType Directory -Path $folder -Force | Out-Null
 
-          # Zip the published output
           Compress-Archive -Path "publish\\*" -DestinationPath "$folder\\artifact.zip" -Force
 
-          # Store metadata so team knows what's inside
           $commit = git rev-parse --short HEAD
           $branch = git rev-parse --abbrev-ref HEAD
 
@@ -189,34 +191,71 @@ Commit      : $commit
 Date        : $dateTime
 "@ | Out-File "$folder\\build-info.txt" -Encoding UTF8
 
-          Write-Host "SUCCESS: Artifact created at $folder"
+          Write-Host "Artifact created at $folder"
         '''
       }
     }
 
-    // ─────────────────────────────────────────────
-    // Deploy to IIS — runs for all environments
-    // and for both DEPLOY and ROLLBACK actions
-    // ─────────────────────────────────────────────
+    // ── For PRODUCTION: copy artifact from DEV folder into PROD folder ─
+    // PROD never builds — it only promotes a tested DEV artifact
+    stage('Promote Artifact to PROD') {
+      when {
+        expression { params.ENVIRONMENT == 'PRODUCTION' }
+      }
+      steps {
+        powershell """
+          \$selected  = "${params.ARTIFACT_BUILD}"
+          \$buildNum  = \$selected.Split("|")[0].Replace("Build_","").Trim()
+
+          \$devRoot   = "${env.DEV_ARTIFACT_ROOT}"
+          \$prodRoot  = "${env.PROD_ARTIFACT_ROOT}"
+
+          # Find the artifact in DEV
+          \$devFolder = Get-ChildItem \$devRoot -Directory -ErrorAction SilentlyContinue |
+                        Where-Object { \$_.Name -like "build_\${buildNum}_*" } |
+                        Select-Object -First 1
+
+          if (\$null -eq \$devFolder) {
+            Write-Error "Build_\$buildNum not found in DEV artifacts (\$devRoot)."
+            exit 1
+          }
+
+          # Create PROD root if missing
+          if (!(Test-Path \$prodRoot)) {
+            New-Item -ItemType Directory -Path \$prodRoot -Force | Out-Null
+          }
+
+          \$prodFolder = Join-Path \$prodRoot \$devFolder.Name
+
+          if (Test-Path \$prodFolder) {
+            Write-Host "Artifact already in PROD: \$(\$devFolder.Name)"
+          } else {
+            Copy-Item -Path \$devFolder.FullName -Destination \$prodRoot -Recurse -Force
+            Write-Host "Promoted \$(\$devFolder.Name) from DEV to PROD artifacts."
+          }
+        """
+      }
+    }
+
+    // ── Deploy to IIS ─────────────────────────────────────────────────
     stage('Deploy to IIS') {
       steps {
         powershell """
           Import-Module WebAdministration
 
-          # ── Resolve which artifact to deploy ──────────────────────────
           \$selected = "${params.ARTIFACT_BUILD}"
-          \$root     = "${env.ARTIFACT_ROOT}"
+          \$envName  = "${params.ENVIRONMENT}"
 
-          if ([string]::IsNullOrWhiteSpace(\$selected) -or
-              \$selected -like "No successful*" -or
-              \$selected -like "ERROR:*") {
-            # Fallback: pick latest artifact folder automatically
-            Write-Host "No artifact selected — using latest available."
+          # Always deploy from the environment's own artifact folder
+          \$root = if (\$envName -eq "DEV") { "${env.DEV_ARTIFACT_ROOT}" } else { "${env.PROD_ARTIFACT_ROOT}" }
+
+          # Resolve artifact folder from selection
+          if ([string]::IsNullOrWhiteSpace(\$selected) -or \$selected -like "No DEV*" -or \$selected -like "ERROR:*") {
+            Write-Host "No artifact selected — using latest in \$root."
             \$folder = Get-ChildItem \$root -Directory |
                        Sort-Object LastWriteTime -Descending |
                        Select-Object -First 1
           } else {
-            # Parse "Build_42 | 2026-03-12 06:22 | main"
             \$buildNum = \$selected.Split("|")[0].Replace("Build_","").Trim()
             \$folder   = Get-ChildItem \$root -Directory |
                          Where-Object { \$_.Name -like "build_\${buildNum}_*" } |
@@ -224,93 +263,78 @@ Date        : $dateTime
           }
 
           if (\$null -eq \$folder) {
-            Write-Error "No artifact folder found. Run a DEV build first."
+            Write-Error "Artifact not found in \$root. Run a DEV build first."
             exit 1
           }
 
           \$zip = Join-Path \$folder.FullName "artifact.zip"
 
           if (!(Test-Path \$zip)) {
-            Write-Error "artifact.zip missing inside \$(\$folder.FullName)"
+            Write-Error "artifact.zip missing in \$(\$folder.FullName)"
             exit 1
           }
 
-          Write-Host "Deploying artifact: \$(\$folder.Name)"
+          Write-Host "Deploying: \$(\$folder.Name) to \$envName"
 
-          # ── Resolve IIS config for selected environment ────────────────
-          switch ("${params.ENVIRONMENT}") {
-            "DEV" {
-              \$site = "${env.DEV_SITE}"; \$pool = "${env.DEV_POOL}"
-              \$path = "${env.DEV_PATH}"; \$port = "${env.DEV_PORT}"
-            }
-            "QA" {
-              \$site = "${env.QA_SITE}";  \$pool = "${env.QA_POOL}"
-              \$path = "${env.QA_PATH}";  \$port = "${env.QA_PORT}"
-            }
-            "STAGING" {
-              \$site = "${env.STAGING_SITE}"; \$pool = "${env.STAGING_POOL}"
-              \$path = "${env.STAGING_PATH}"; \$port = "${env.STAGING_PORT}"
-            }
-            "PRODUCTION" {
-              \$site = "${env.PROD_SITE}"; \$pool = "${env.PROD_POOL}"
-              \$path = "${env.PROD_PATH}"; \$port = "${env.PROD_PORT}"
-            }
+          # IIS settings per environment
+          if (\$envName -eq "DEV") {
+            \$site = "${env.DEV_SITE}"
+            \$pool = "${env.DEV_POOL}"
+            \$path = "${env.DEV_PATH}"
+            \$port = "${env.DEV_PORT}"
+          } else {
+            \$site = "${env.PROD_SITE}"
+            \$pool = "${env.PROD_POOL}"
+            \$path = "${env.PROD_PATH}"
+            \$port = "${env.PROD_PORT}"
           }
 
-          # ── Create deploy folder if missing ───────────────────────────
+          # Create deploy folder if missing
           if (!(Test-Path \$path)) {
             New-Item -ItemType Directory -Path \$path -Force | Out-Null
           }
 
-          # ── Create App Pool if missing ────────────────────────────────
+          # Create App Pool if missing
           if (!(Test-Path "IIS:\\AppPools\\\$pool")) {
             New-WebAppPool -Name \$pool
             Set-ItemProperty "IIS:\\AppPools\\\$pool" managedRuntimeVersion ""
             Write-Host "Created App Pool: \$pool"
           }
 
-          # ── Create IIS Site if missing ────────────────────────────────
+          # Create IIS Site if missing
           if (!(Test-Path "IIS:\\Sites\\\$site")) {
             New-Website -Name \$site -Port \$port -PhysicalPath \$path -ApplicationPool \$pool
             Write-Host "Created IIS site: \$site on port \$port"
           }
 
-          # ── Stop pool, swap files, restart ────────────────────────────
+          # Stop -> clean -> extract -> start
           Stop-WebAppPool -Name \$pool -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 2
 
           Remove-Item "\$path\\*" -Recurse -Force -ErrorAction SilentlyContinue
-
           Expand-Archive -Path \$zip -DestinationPath \$path -Force
 
           Start-WebAppPool -Name \$pool
           Start-Website    -Name \$site
 
-          Write-Host "SUCCESS: Deployed \$(\$folder.Name) to \$site (port \$port)"
+          Write-Host "SUCCESS: \$(\$folder.Name) deployed to \$site (port \$port)"
         """
       }
     }
 
-    // ─────────────────────────────────────────────
-    // Quick sanity check — is the app pool running?
-    // ─────────────────────────────────────────────
+    // ── Verify app pool is running ────────────────────────────────────
     stage('Verify') {
       steps {
         powershell """
           Import-Module WebAdministration
 
-          switch ("${params.ENVIRONMENT}") {
-            "DEV"        { \$pool = "${env.DEV_POOL}" }
-            "QA"         { \$pool = "${env.QA_POOL}" }
-            "STAGING"    { \$pool = "${env.STAGING_POOL}" }
-            "PRODUCTION" { \$pool = "${env.PROD_POOL}" }
-          }
+          \$pool = if ("${params.ENVIRONMENT}" -eq "DEV") { "${env.DEV_POOL}" } else { "${env.PROD_POOL}" }
 
           \$state = (Get-WebAppPoolState -Name \$pool).Value
           Write-Host "App Pool '\$pool' state: \$state"
 
           if (\$state -ne "Started") {
-            Write-Error "App pool is not running — deployment may have failed."
+            Write-Error "App pool not running — deployment failed."
             exit 1
           }
 
@@ -323,10 +347,10 @@ Date        : $dateTime
 
   post {
     success {
-      echo "Pipeline #${BUILD_NUMBER} completed — ${params.ENVIRONMENT} ${params.ACTION}"
+      echo "Build #${BUILD_NUMBER} — ${params.ENVIRONMENT} ${params.ACTION} completed successfully."
     }
     failure {
-      echo "Pipeline #${BUILD_NUMBER} FAILED — check logs above."
+      echo "Build #${BUILD_NUMBER} — ${params.ENVIRONMENT} ${params.ACTION} FAILED. Check logs."
     }
   }
 
