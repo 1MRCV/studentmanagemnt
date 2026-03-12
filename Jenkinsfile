@@ -21,7 +21,7 @@ properties([
 
     [$class: 'CascadeChoiceParameter',
       name: 'ARTIFACT_BUILD',
-      description: 'Select build to deploy — shows all successful DEV builds',
+      description: 'Select build to deploy. For a fresh DEV build from Git, leave the first option selected.',
       choiceType: 'PT_SINGLE_SELECT',
       filterable: true,
       script: [
@@ -38,7 +38,8 @@ properties([
               return ["ERROR: Job not found"]
             }
 
-            def list = []
+            // First entry acts as the "no selection" placeholder for fresh DEV builds
+            def list = ["-- Build from Git (DEV only) --"]
 
             job.getBuilds().each { build ->
               if (build.getResult()?.toString() == "SUCCESS") {
@@ -47,17 +48,13 @@ properties([
                 def actParam = params?.getParameter("ACTION")?.getValue()
 
                 if (envParam == "DEV" && actParam == "DEPLOY") {
-                  def date   = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm").format(build.getTime())
-                  def branch = build.getEnvironment()?.get("GIT_BRANCH") ?: "unknown"
-                  branch     = branch.replaceAll("^origin/", "")
-                  list << "Build_${build.getNumber()} | ${date} | ${branch}"
+                  def date = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm").format(build.getTime())
+                  list << "Build_${build.getNumber()} | ${date}"
                 }
               }
             }
 
-            return list.isEmpty()
-              ? ["No DEV builds yet — run ENVIRONMENT=DEV, ACTION=DEPLOY first"]
-              : list
+            return list
           '''
         ]
       ]
@@ -70,9 +67,6 @@ pipeline {
 
   agent { label 'windows-agent' }
 
-  // Prevents Jenkins from automatically doing a git checkout
-  // on the Windows agent before stages run (which would fail
-  // because it tries to use /usr/bin/git on Windows)
   options {
     skipDefaultCheckout(true)
   }
@@ -256,6 +250,16 @@ Date        : $dateTime
     }
 
     stage('Deploy to IIS') {
+      // Skip this stage when doing a fresh DEV build from Git
+      // (placeholder selected = just build and store artifact, no deploy)
+      when {
+        not {
+          allOf {
+            expression { params.ENVIRONMENT == 'DEV' }
+            expression { params.ARTIFACT_BUILD.startsWith('-- Build from Git') }
+          }
+        }
+      }
       steps {
         powershell """
           \$ErrorActionPreference = "Stop"
@@ -263,20 +267,12 @@ Date        : $dateTime
 
           \$envName  = "${params.ENVIRONMENT}"
           \$selected = "${params.ARTIFACT_BUILD}"
+          \$storage  = if (\$envName -eq "DEV") { "\$env:DEV_ARTIFACT_STORAGE" } else { "\$env:PROD_ARTIFACT_STORAGE" }
 
-          \$storage = if (\$envName -eq "DEV") { "\$env:DEV_ARTIFACT_STORAGE" } else { "\$env:PROD_ARTIFACT_STORAGE" }
-
-          if ([string]::IsNullOrWhiteSpace(\$selected) -or \$selected -like "No DEV*" -or \$selected -like "ERROR:*") {
-            Write-Host "No artifact selected — using latest."
-            \$folder = Get-ChildItem \$storage -Directory |
-                       Sort-Object LastWriteTime -Descending |
+          \$buildNum = \$selected.Split("|")[0].Replace("Build_","").Trim()
+          \$folder   = Get-ChildItem \$storage -Directory |
+                       Where-Object { \$_.Name -like "build_\${buildNum}_*" } |
                        Select-Object -First 1
-          } else {
-            \$buildNum = \$selected.Split("|")[0].Replace("Build_","").Trim()
-            \$folder   = Get-ChildItem \$storage -Directory |
-                         Where-Object { \$_.Name -like "build_\${buildNum}_*" } |
-                         Select-Object -First 1
-          }
 
           if (\$null -eq \$folder) {
             throw "Artifact not found in \$storage. Run a DEV build first."
@@ -350,6 +346,14 @@ Date        : $dateTime
     }
 
     stage('Verify Deployment') {
+      when {
+        not {
+          allOf {
+            expression { params.ENVIRONMENT == 'DEV' }
+            expression { params.ARTIFACT_BUILD.startsWith('-- Build from Git') }
+          }
+        }
+      }
       steps {
         powershell """
           Import-Module WebAdministration
@@ -372,10 +376,10 @@ Date        : $dateTime
 
   post {
     success {
-      echo "Build ${BUILD_NUMBER} deployed successfully."
+      echo "Build ${BUILD_NUMBER} completed successfully."
     }
     failure {
-      echo "Deployment failed. Please check logs."
+      echo "Pipeline failed. Please check logs."
     }
   }
 
