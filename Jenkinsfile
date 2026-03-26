@@ -32,7 +32,7 @@ properties([
           script: '''
             import jenkins.model.Jenkins
 
-            def job = Jenkins.instance.getItemByFullName("Jenkins-only")
+            def job = Jenkins.instance.getItemByFullName("Test")
 
             if (job == null) {
               return ["ERROR: Job not found"]
@@ -250,8 +250,6 @@ Date        : $dateTime
     }
 
     stage('Deploy to IIS') {
-      // Skip this stage when doing a fresh DEV build from Git
-      // (placeholder selected = just build and store artifact, no deploy)
       when {
         not {
           allOf {
