@@ -1,182 +1,123 @@
 pipeline {
+    agent { label 'windows-agent' }
 
-  agent { label 'windows-agent' }
+    parameters {
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['DEV', 'PROD'],
+            description: 'Select environment'
+        )
 
-  options {
-    skipDefaultCheckout(true)   // 🔥 IMPORTANT FIX
-  }
-
-  parameters {
-
-    choice(
-      name: 'ENVIRONMENT',
-      choices: ['DEV', 'PRODUCTION'],
-      description: 'Select environment'
-    )
-
-    choice(
-      name: 'ACTION',
-      choices: ['DEPLOY', 'ROLLBACK'],
-      description: 'Deploy or rollback'
-    )
-
-    string(
-      name: 'BRANCH',
-      defaultValue: 'main',
-      description: 'Git branch (DEV only)'
-    )
-
-    string(
-      name: 'ARTIFACT_BUILD',
-      defaultValue: '',
-      description: 'Build number for PROD (e.g., Build_17)'
-    )
-  }
-
-  environment {
-    GIT_REPO = 'https://github.com/1MRCV/studentmanagemnt.git'
-
-    DEV_ARTIFACT_STORAGE  = 'C:\\jenkins-artifacts\\DEV'
-    PROD_ARTIFACT_STORAGE = 'C:\\jenkins-artifacts\\PROD'
-
-    DEV_IIS_PATH  = 'C:\\inetpub\\dev'
-    PROD_IIS_PATH = 'C:\\inetpub\\prod'
-
-    DEV_APP_POOL  = 'student-dev-pool'
-    PROD_APP_POOL = 'student-prod-pool'
-
-    DEV_SITE  = 'student-dev'
-    PROD_SITE = 'student-prod'
-
-    DEV_PORT  = '8081'
-    PROD_PORT = '8082'
-
-    PUBLISH_FOLDER = 'publish'
-  }
-
-  stages {
-
-    stage('Set Build Name') {
-      steps {
-        script {
-          def date = new Date().format('yyyy-MM-dd')
-          currentBuild.displayName = "#${env.BUILD_NUMBER} | ${params.ENVIRONMENT} | ${date}"
-        }
-      }
+        string(
+            name: 'ARTIFACT_BUILD',
+            defaultValue: '',
+            description: 'Required only for PROD (e.g. Build_21 | 2026-03-27)'
+        )
     }
 
-    // ✅ DEV FLOW (Build + Deploy)
-    stage('Checkout Code') {
-      when {
-        expression { params.ENVIRONMENT == 'DEV' }
-      }
-      steps {
-        deleteDir()
-        checkout([
-          $class: 'GitSCM',
-          branches: [[name: "${params.BRANCH}"]],
-          userRemoteConfigs: [[url: "${env.GIT_REPO}"]],
-          gitTool: 'Git-Windows'
-        ])
-      }
+    environment {
+        DEV_ARTIFACT_STORAGE  = "C:\\jenkins-artifacts\\DEV"
+        PROD_ARTIFACT_STORAGE = "C:\\jenkins-artifacts\\PROD"
     }
 
-    stage('Build + Publish') {
-      when {
-        expression { params.ENVIRONMENT == 'DEV' }
-      }
-      steps {
-        powershell '''
-          dotnet restore
-          dotnet build --configuration Release
-          dotnet publish StudentPortal.Web/StudentPortal.Web.csproj -c Release -o publish
-        '''
-      }
-    }
+    stages {
 
-    stage('Create Artifact') {
-      when {
-        expression { params.ENVIRONMENT == 'DEV' }
-      }
-      steps {
-        powershell '''
-          $build = $env:BUILD_NUMBER
-          $date  = Get-Date -Format "yyyy-MM-dd"
-          $storage = $env:DEV_ARTIFACT_STORAGE
-
-          if (!(Test-Path $storage)) {
-            New-Item -ItemType Directory -Path $storage | Out-Null
-          }
-
-          $folder = "$storage\\build_${build}_$date"
-          New-Item -ItemType Directory -Path $folder -Force | Out-Null
-
-          Compress-Archive `
-            -Path "$env:PUBLISH_FOLDER\\*" `
-            -DestinationPath "$folder\\artifact.zip" `
-            -Force
-
-          Write-Host "Artifact created: $folder"
-        '''
-      }
-    }
-
-  stage('Deploy to IIS') {
-    steps {
-        powershell '''
-        if ("${params.ENVIRONMENT}" -eq "DEV") {
-            $buildNum = "${env.BUILD_NUMBER}"
-            $storage  = $env:DEV_ARTIFACT_STORAGE
-        } else {
-            $selected = "${params.ARTIFACT_BUILD}"
-            $buildNum = $selected.Split("|")[0].Replace("Build_","").Trim()
-            $storage  = $env:PROD_ARTIFACT_STORAGE
+        stage('Checkout Code') {
+            when { expression { params.ENVIRONMENT == 'DEV' } }
+            steps {
+                deleteDir()
+                checkout scm
+            }
         }
 
-        Write-Host "Build Number: $buildNum"
-        Write-Host "Storage: $storage"
-
-        $folder = Get-ChildItem $storage -Directory |
-                  Where-Object { $_.Name -like "build_${buildNum}_*" } |
-                  Select-Object -First 1
-
-        if ($null -eq $folder) {
-            throw "Artifact not found for build $buildNum"
+        stage('Build + Publish (DEV only)') {
+            when { expression { params.ENVIRONMENT == 'DEV' } }
+            steps {
+                powershell '''
+                dotnet restore
+                dotnet build --configuration Release
+                dotnet publish -c Release -o publish
+                '''
+            }
         }
 
-        Write-Host "Deploying from $($folder.FullName)"
+        stage('Create Artifact (DEV only)') {
+            when { expression { params.ENVIRONMENT == 'DEV' } }
+            steps {
+                powershell '''
+                $date = Get-Date -Format "yyyy-MM-dd"
+                $buildNum = $env:BUILD_NUMBER
 
-        Remove-Item "$env:IIS_PATH\\*" -Recurse -Force -ErrorAction SilentlyContinue
-        Copy-Item -Recurse "$($folder.FullName)\\*" "$env:IIS_PATH"
+                $artifactPath = "$env:DEV_ARTIFACT_STORAGE\\build_${buildNum}_$date"
 
-        Write-Host "Deployment completed"
-        '''
+                New-Item -ItemType Directory -Path $artifactPath -Force | Out-Null
+                Copy-Item "publish\\*" $artifactPath -Recurse -Force
+
+                Write-Host "Artifact created: $artifactPath"
+                '''
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                powershell '''
+
+                if ("${params.ENVIRONMENT}" -eq "DEV") {
+                    # Direct deploy from publish
+                    $source = "publish"
+                }
+                else {
+                    # PROD → use selected artifact
+                    if ("${params.ARTIFACT_BUILD}" -eq "") {
+                        throw "ARTIFACT_BUILD is required for PROD"
+                    }
+
+                    $buildNum = "${params.ARTIFACT_BUILD}".Split("|")[0].Replace("Build_","").Trim()
+
+                    $folder = Get-ChildItem "$env:DEV_ARTIFACT_STORAGE" -Directory |
+                              Where-Object { $_.Name -like "build_${buildNum}_*" } |
+                              Select-Object -First 1
+
+                    if ($null -eq $folder) {
+                        throw "Artifact not found for build $buildNum"
+                    }
+
+                    $source = $folder.FullName
+                }
+
+                $destination = "C:\\inetpub\\wwwroot\\StudentPortal"
+
+                if (!(Test-Path $source)) {
+                    throw "Source not found: $source"
+                }
+
+                # Stop IIS
+                iisreset /stop
+
+                # Clean
+                Remove-Item "$destination\\*" -Recurse -Force -ErrorAction SilentlyContinue
+
+                # Copy
+                Copy-Item "$source\\*" $destination -Recurse -Force
+
+                # Start IIS
+                iisreset /start
+
+                Write-Host "Deployment SUCCESS from $source"
+                '''
+            }
+        }
+
+        stage('Verify') {
+            steps {
+                echo "Deployment completed!"
+            }
+        }
     }
-}
-    stage('Verify') {
-      steps {
-        powershell '''
-          Import-Module WebAdministration
 
-          $appPool = if ("${params.ENVIRONMENT}" -eq "DEV") { $env:DEV_APP_POOL } else { $env:PROD_APP_POOL }
-
-          $state = (Get-WebAppPoolState -Name $appPool).Value
-          Write-Host "App Pool State: $state"
-
-          if ($state -ne "Started") {
-              throw "Deployment failed"
-          }
-        '''
-      }
+    post {
+        failure {
+            echo "FAILED"
+        }
     }
-  }
-
-  post {
-    success {
-      echo "SUCCESS"
-    }
-    failure {
-      echo "FAILED"
-    }
-  }
 }
