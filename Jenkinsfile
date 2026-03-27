@@ -121,72 +121,38 @@ pipeline {
       }
     }
 
-    stage('Deploy to IIS') {
-      steps {
+  stage('Deploy to IIS') {
+    steps {
         powershell '''
-          $envName = "${params.ENVIRONMENT}"
+        if ("${params.ENVIRONMENT}" -eq "DEV") {
+            $buildNum = "${env.BUILD_NUMBER}"
+            $storage  = $env:DEV_ARTIFACT_STORAGE
+        } else {
+            $selected = "${params.ARTIFACT_BUILD}"
+            $buildNum = $selected.Split("|")[0].Replace("Build_","").Trim()
+            $storage  = $env:PROD_ARTIFACT_STORAGE
+        }
 
-          if ($envName -eq "DEV") {
-              $buildNum = $env:BUILD_NUMBER
-              $storage  = $env:DEV_ARTIFACT_STORAGE
-          }
-          else {
-              $selected = "${params.ARTIFACT_BUILD}"
-              $buildNum = $selected.Replace("Build_","").Trim()
-              $storage  = $env:PROD_ARTIFACT_STORAGE
-          }
+        Write-Host "Build Number: $buildNum"
+        Write-Host "Storage: $storage"
 
-          $folder = Get-ChildItem $storage -Directory |
-                    Where-Object { $_.Name -like "build_${buildNum}_*" } |
-                    Select-Object -First 1
+        $folder = Get-ChildItem $storage -Directory |
+                  Where-Object { $_.Name -like "build_${buildNum}_*" } |
+                  Select-Object -First 1
 
-          if ($null -eq $folder) {
-              throw "Artifact not found for build $buildNum"
-          }
+        if ($null -eq $folder) {
+            throw "Artifact not found for build $buildNum"
+        }
 
-          $zipPath = Join-Path $folder.FullName "artifact.zip"
+        Write-Host "Deploying from $($folder.FullName)"
 
-          Import-Module WebAdministration
+        Remove-Item "$env:IIS_PATH\\*" -Recurse -Force -ErrorAction SilentlyContinue
+        Copy-Item -Recurse "$($folder.FullName)\\*" "$env:IIS_PATH"
 
-          if ($envName -eq "DEV") {
-              $deployPath  = $env:DEV_IIS_PATH
-              $appPool     = $env:DEV_APP_POOL
-              $site        = $env:DEV_SITE
-              $port        = $env:DEV_PORT
-          }
-          else {
-              $deployPath  = $env:PROD_IIS_PATH
-              $appPool     = $env:PROD_APP_POOL
-              $site        = $env:PROD_SITE
-              $port        = $env:PROD_PORT
-          }
-
-          if (!(Test-Path "IIS:\\AppPools\\$appPool")) {
-              New-WebAppPool -Name $appPool
-          }
-
-          if (!(Test-Path "IIS:\\Sites\\$site")) {
-              if (!(Test-Path $deployPath)) {
-                  New-Item -ItemType Directory -Path $deployPath | Out-Null
-              }
-
-              New-Website -Name $site -Port $port -PhysicalPath $deployPath -ApplicationPool $appPool
-          }
-
-          Stop-WebAppPool -Name $appPool -ErrorAction SilentlyContinue
-
-          Remove-Item "$deployPath\\*" -Recurse -Force -ErrorAction SilentlyContinue
-
-          Expand-Archive -Path $zipPath -DestinationPath $deployPath -Force
-
-          Start-WebAppPool -Name $appPool
-          Start-Website -Name $site
-
-          Write-Host "Deployment successful"
+        Write-Host "Deployment completed"
         '''
-      }
     }
-
+}
     stage('Verify') {
       steps {
         powershell '''
