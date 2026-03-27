@@ -1,36 +1,37 @@
-properties([
-  parameters([
+pipeline {
+
+  agent { label 'windows-agent' }
+
+  options {
+    skipDefaultCheckout(true)   // 🔥 IMPORTANT FIX
+  }
+
+  parameters {
 
     choice(
       name: 'ENVIRONMENT',
       choices: ['DEV', 'PRODUCTION'],
       description: 'Select environment'
-    ),
+    )
 
     choice(
       name: 'ACTION',
-      choices: ['DEPLOY'],
-      description: 'Deploy application'
-    ),
+      choices: ['DEPLOY', 'ROLLBACK'],
+      description: 'Deploy or rollback'
+    )
 
     string(
       name: 'BRANCH',
       defaultValue: 'main',
       description: 'Git branch (DEV only)'
-    ),
+    )
 
     string(
       name: 'ARTIFACT_BUILD',
       defaultValue: '',
-      description: 'Build to deploy (only for PROD)'
+      description: 'Build number for PROD (e.g., Build_17)'
     )
-
-  ])
-])
-
-pipeline {
-
-  agent { label 'windows-agent' }
+  }
 
   environment {
     GIT_REPO = 'https://github.com/1MRCV/studentmanagemnt.git'
@@ -64,37 +65,44 @@ pipeline {
       }
     }
 
-    // ================= DEV BUILD =================
-    stage('Build & Publish (DEV only)') {
+    // ✅ DEV FLOW (Build + Deploy)
+    stage('Checkout Code') {
       when {
         expression { params.ENVIRONMENT == 'DEV' }
       }
       steps {
         deleteDir()
-
         checkout([
           $class: 'GitSCM',
           branches: [[name: "${params.BRANCH}"]],
           userRemoteConfigs: [[url: "${env.GIT_REPO}"]],
           gitTool: 'Git-Windows'
         ])
-
-        powershell 'dotnet restore'
-        powershell 'dotnet build --configuration Release'
-        powershell 'dotnet publish StudentPortal.Web/StudentPortal.Web.csproj -c Release -o publish'
       }
     }
 
-    // ================= CREATE ARTIFACT =================
-    stage('Create Artifact (DEV only)') {
+    stage('Build + Publish') {
       when {
         expression { params.ENVIRONMENT == 'DEV' }
       }
       steps {
         powershell '''
-          $build    = $env:BUILD_NUMBER
-          $date     = Get-Date -Format "yyyy-MM-dd"
-          $storage  = $env:DEV_ARTIFACT_STORAGE
+          dotnet restore
+          dotnet build --configuration Release
+          dotnet publish StudentPortal.Web/StudentPortal.Web.csproj -c Release -o publish
+        '''
+      }
+    }
+
+    stage('Create Artifact') {
+      when {
+        expression { params.ENVIRONMENT == 'DEV' }
+      }
+      steps {
+        powershell '''
+          $build = $env:BUILD_NUMBER
+          $date  = Get-Date -Format "yyyy-MM-dd"
+          $storage = $env:DEV_ARTIFACT_STORAGE
 
           if (!(Test-Path $storage)) {
             New-Item -ItemType Directory -Path $storage | Out-Null
@@ -113,41 +121,28 @@ pipeline {
       }
     }
 
-    // ================= DEPLOY =================
     stage('Deploy to IIS') {
       steps {
         powershell '''
-          $ErrorActionPreference = "Stop"
-
-          # ✅ Correct variable usage
-          $envName = $env:ENVIRONMENT
-
-          Write-Host "ENVIRONMENT = $env:ENVIRONMENT"
-          Write-Host "BUILD_NUMBER = $env:BUILD_NUMBER"
-          Write-Host "ARTIFACT_BUILD = $env:ARTIFACT_BUILD"
+          $envName = "${params.ENVIRONMENT}"
 
           if ($envName -eq "DEV") {
               $buildNum = $env:BUILD_NUMBER
               $storage  = $env:DEV_ARTIFACT_STORAGE
           }
           else {
-              $selected = $env:ARTIFACT_BUILD
-              $buildNum = $selected.Split("|")[0].Replace("Build_","").Trim()
+              $selected = "${params.ARTIFACT_BUILD}"
+              $buildNum = $selected.Replace("Build_","").Trim()
               $storage  = $env:PROD_ARTIFACT_STORAGE
           }
-
-          Write-Host "Using BUILD: $buildNum"
-          Write-Host "Using STORAGE: $storage"
 
           $folder = Get-ChildItem $storage -Directory |
                     Where-Object { $_.Name -like "build_${buildNum}_*" } |
                     Select-Object -First 1
 
           if ($null -eq $folder) {
-              throw "Artifact not found for build $buildNum in $storage"
+              throw "Artifact not found for build $buildNum"
           }
-
-          Write-Host "FOUND: $($folder.FullName)"
 
           $zipPath = Join-Path $folder.FullName "artifact.zip"
 
@@ -156,12 +151,13 @@ pipeline {
           if ($envName -eq "DEV") {
               $deployPath  = $env:DEV_IIS_PATH
               $appPool     = $env:DEV_APP_POOL
-              $websiteName = $env:DEV_SITE
+              $site        = $env:DEV_SITE
               $port        = $env:DEV_PORT
-          } else {
+          }
+          else {
               $deployPath  = $env:PROD_IIS_PATH
               $appPool     = $env:PROD_APP_POOL
-              $websiteName = $env:PROD_SITE
+              $site        = $env:PROD_SITE
               $port        = $env:PROD_PORT
           }
 
@@ -169,59 +165,52 @@ pipeline {
               New-WebAppPool -Name $appPool
           }
 
-          if (!(Test-Path "IIS:\\Sites\\$websiteName")) {
+          if (!(Test-Path "IIS:\\Sites\\$site")) {
               if (!(Test-Path $deployPath)) {
                   New-Item -ItemType Directory -Path $deployPath | Out-Null
               }
 
-              New-Website -Name $websiteName -Port $port -PhysicalPath $deployPath -ApplicationPool $appPool
+              New-Website -Name $site -Port $port -PhysicalPath $deployPath -ApplicationPool $appPool
           }
 
           Stop-WebAppPool -Name $appPool -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 2
 
           Remove-Item "$deployPath\\*" -Recurse -Force -ErrorAction SilentlyContinue
 
           Expand-Archive -Path $zipPath -DestinationPath $deployPath -Force
 
           Start-WebAppPool -Name $appPool
-          Start-Website -Name $websiteName
+          Start-Website -Name $site
 
-          Write-Host "Deployment completed successfully"
+          Write-Host "Deployment successful"
         '''
       }
     }
 
-    // ================= VERIFY =================
     stage('Verify') {
       steps {
         powershell '''
           Import-Module WebAdministration
 
-          $appPool = if ($env:ENVIRONMENT -eq "DEV") { $env:DEV_APP_POOL } else { $env:PROD_APP_POOL }
+          $appPool = if ("${params.ENVIRONMENT}" -eq "DEV") { $env:DEV_APP_POOL } else { $env:PROD_APP_POOL }
 
           $state = (Get-WebAppPoolState -Name $appPool).Value
-
           Write-Host "App Pool State: $state"
 
           if ($state -ne "Started") {
               throw "Deployment failed"
           }
-
-          Write-Host "Deployment verified successfully"
         '''
       }
     }
-
   }
 
   post {
     success {
-      echo "SUCCESS: Build ${BUILD_NUMBER}"
+      echo "SUCCESS"
     }
     failure {
-      echo "FAILED: Check logs"
+      echo "FAILED"
     }
   }
-
 }
