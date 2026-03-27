@@ -4,34 +4,55 @@ pipeline {
     parameters {
         choice(
             name: 'ENVIRONMENT',
-            choices: ['DEV', 'PROD'],
+            choices: ['DEV', 'PRODUCTION'],
             description: 'Select environment'
+        )
+
+        choice(
+            name: 'ACTION',
+            choices: ['DEPLOY', 'ROLLBACK'],
+            description: 'Deploy or rollback'
+        )
+
+        string(
+            name: 'BRANCH',
+            defaultValue: 'main',
+            description: 'Git branch (DEV only)'
         )
 
         string(
             name: 'ARTIFACT_BUILD',
             defaultValue: '',
-            description: 'Required only for PROD (e.g. Build_21 | 2026-03-27)'
+            description: 'Used only for PRODUCTION'
         )
     }
 
     environment {
-        DEV_ARTIFACT_STORAGE  = "C:\\jenkins-artifacts\\DEV"
-        PROD_ARTIFACT_STORAGE = "C:\\jenkins-artifacts\\PROD"
+        DEV_ARTIFACT_STORAGE = "C:\\jenkins-artifacts\\DEV"
     }
 
     stages {
 
+        // =========================
+        // DEV ONLY - CHECKOUT
+        // =========================
         stage('Checkout Code') {
-            when { expression { params.ENVIRONMENT == 'DEV' } }
+            when {
+                expression { params.ENVIRONMENT == 'DEV' }
+            }
             steps {
                 deleteDir()
-                checkout scm
+                git branch: "${params.BRANCH}", url: 'https://github.com/1MRCV/studentmanagemnt.git'
             }
         }
 
-        stage('Build + Publish (DEV only)') {
-            when { expression { params.ENVIRONMENT == 'DEV' } }
+        // =========================
+        // DEV ONLY - BUILD
+        // =========================
+        stage('Build + Publish') {
+            when {
+                expression { params.ENVIRONMENT == 'DEV' }
+            }
             steps {
                 powershell '''
                 dotnet restore
@@ -41,8 +62,13 @@ pipeline {
             }
         }
 
-        stage('Create Artifact (DEV only)') {
-            when { expression { params.ENVIRONMENT == 'DEV' } }
+        // =========================
+        // DEV ONLY - CREATE ARTIFACT
+        // =========================
+        stage('Create Artifact') {
+            when {
+                expression { params.ENVIRONMENT == 'DEV' }
+            }
             steps {
                 powershell '''
                 $date = Get-Date -Format "yyyy-MM-dd"
@@ -58,18 +84,25 @@ pipeline {
             }
         }
 
+        // =========================
+        // DEPLOY (DEV + PROD)
+        // =========================
         stage('Deploy') {
+            when {
+                expression { params.ACTION == 'DEPLOY' }
+            }
             steps {
                 powershell '''
 
                 if ("${params.ENVIRONMENT}" -eq "DEV") {
-                    # Direct deploy from publish
+
+                    Write-Host "DEV: Using fresh build"
                     $source = "publish"
                 }
                 else {
-                    # PROD → use selected artifact
-                    if ("${params.ARTIFACT_BUILD}" -eq "") {
-                        throw "ARTIFACT_BUILD is required for PROD"
+
+                    if ("${params.ARTIFACT_BUILD}" -eq "" -or "${params.ARTIFACT_BUILD}" -like "-- Select Build --") {
+                        throw "Select ARTIFACT_BUILD for PRODUCTION"
                     }
 
                     $buildNum = "${params.ARTIFACT_BUILD}".Split("|")[0].Replace("Build_","").Trim()
@@ -82,6 +115,7 @@ pipeline {
                         throw "Artifact not found for build $buildNum"
                     }
 
+                    Write-Host "PROD: Using artifact build $buildNum"
                     $source = $folder.FullName
                 }
 
@@ -91,26 +125,55 @@ pipeline {
                     throw "Source not found: $source"
                 }
 
-                # Stop IIS
                 iisreset /stop
-
-                # Clean
                 Remove-Item "$destination\\*" -Recurse -Force -ErrorAction SilentlyContinue
-
-                # Copy
                 Copy-Item "$source\\*" $destination -Recurse -Force
-
-                # Start IIS
                 iisreset /start
 
-                Write-Host "Deployment SUCCESS from $source"
+                Write-Host "Deployment SUCCESS"
+                '''
+            }
+        }
+
+        // =========================
+        // ROLLBACK (PROD ONLY)
+        // =========================
+        stage('Rollback') {
+            when {
+                expression { params.ACTION == 'ROLLBACK' && params.ENVIRONMENT == 'PRODUCTION' }
+            }
+            steps {
+                powershell '''
+
+                if ("${params.ARTIFACT_BUILD}" -eq "") {
+                    throw "Select ARTIFACT_BUILD for rollback"
+                }
+
+                $buildNum = "${params.ARTIFACT_BUILD}".Split("|")[0].Replace("Build_","").Trim()
+
+                $folder = Get-ChildItem "$env:DEV_ARTIFACT_STORAGE" -Directory |
+                          Where-Object { $_.Name -like "build_${buildNum}_*" } |
+                          Select-Object -First 1
+
+                if ($null -eq $folder) {
+                    throw "Artifact not found for rollback build $buildNum"
+                }
+
+                $destination = "C:\\inetpub\\wwwroot\\StudentPortal"
+
+                iisreset /stop
+                Remove-Item "$destination\\*" -Recurse -Force -ErrorAction SilentlyContinue
+                Copy-Item "$folder.FullName\\*" $destination -Recurse -Force
+                iisreset /start
+
+                Write-Host "Rollback SUCCESS"
                 '''
             }
         }
 
         stage('Verify') {
             steps {
-                echo "Deployment completed!"
+                echo "Pipeline completed"
             }
         }
     }
