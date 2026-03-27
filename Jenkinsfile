@@ -10,18 +10,18 @@ properties([
     choice(
       name: 'ACTION',
       choices: ['DEPLOY', 'ROLLBACK'],
-      description: 'DEPLOY = Build (DEV) or Deploy artifact (PROD). ROLLBACK = redeploy old build.'
+      description: 'DEPLOY = Build (DEV) or Deploy artifact (PROD)'
     ),
 
     string(
       name: 'BRANCH',
       defaultValue: 'main',
-      description: 'Git branch (only for DEV DEPLOY)'
+      description: 'Git branch (only for DEV)'
     ),
 
     [$class: 'CascadeChoiceParameter',
       name: 'ARTIFACT_BUILD',
-      description: 'Select build (only for PROD or rollback)',
+      description: 'Select build (PROD / ROLLBACK)',
       choiceType: 'PT_SINGLE_SELECT',
       filterable: true,
       script: [
@@ -33,7 +33,7 @@ properties([
             import jenkins.model.Jenkins
 
             def job = Jenkins.instance.getItemByFullName("Test")
-            if (job == null) return ["ERROR: Job not found"]
+            if (job == null) return ["ERROR"]
 
             def list = ["-- Select Build --"]
 
@@ -93,6 +93,8 @@ pipeline {
       }
     }
 
+    // ================= DEV BUILD =================
+
     stage('Clean Workspace') {
       when {
         allOf {
@@ -100,12 +102,10 @@ pipeline {
           expression { params.ACTION == 'DEPLOY' }
         }
       }
-      steps {
-        deleteDir()
-      }
+      steps { deleteDir() }
     }
 
-    stage('Checkout Code') {
+    stage('Checkout') {
       when {
         allOf {
           expression { params.ENVIRONMENT == 'DEV' }
@@ -129,9 +129,7 @@ pipeline {
           expression { params.ACTION == 'DEPLOY' }
         }
       }
-      steps {
-        powershell 'dotnet restore'
-      }
+      steps { powershell 'dotnet restore' }
     }
 
     stage('Build') {
@@ -141,9 +139,7 @@ pipeline {
           expression { params.ACTION == 'DEPLOY' }
         }
       }
-      steps {
-        powershell 'dotnet build --configuration Release'
-      }
+      steps { powershell 'dotnet build --configuration Release' }
     }
 
     stage('Publish') {
@@ -188,9 +184,13 @@ Branch  : $branch
 Commit  : $commit
 Date    : $time
 "@ | Out-File "$folder\\build-info.txt"
+
+          Write-Host "Artifact created: $folder"
         '''
       }
     }
+
+    // ================= PROD PROMOTION =================
 
     stage('Promote to PROD') {
       when {
@@ -204,16 +204,22 @@ Date    : $time
           $dev  = $env:DEV_ARTIFACT_STORAGE
           $prod = $env:PROD_ARTIFACT_STORAGE
 
-          $folder = Get-ChildItem $dev -Directory | Where-Object { $_.Name -like "build_${buildNum}_*" } | Select-Object -First 1
+          $folder = Get-ChildItem $dev -Directory |
+                    Where-Object { $_.Name -like "build_${buildNum}_*" } |
+                    Select-Object -First 1
 
-          if ($null -eq $folder) { throw "Build not found" }
+          if ($null -eq $folder) { throw "Build not found in DEV" }
 
           if (!(Test-Path $prod)) { New-Item -ItemType Directory -Path $prod }
 
           Copy-Item $folder.FullName -Destination $prod -Recurse -Force
+
+          Write-Host "Promoted build $buildNum to PROD"
         '''
       }
     }
+
+    // ================= DEPLOY =================
 
     stage('Deploy to IIS') {
       steps {
@@ -223,22 +229,23 @@ Date    : $time
           $envName = "${params.ENVIRONMENT}"
 
           if ($envName -eq "DEV" -and "${params.ACTION}" -eq "DEPLOY") {
-            $buildNum = $env:BUILD_NUMBER
             $storage = $env:DEV_ARTIFACT_STORAGE
-          } else {
+
+            # ✅ FIX: always take latest build
+            $folder = Get-ChildItem $storage -Directory |
+                      Sort-Object LastWriteTime -Descending |
+                      Select-Object -First 1
+          }
+          else {
             $selected = "${params.ARTIFACT_BUILD}"
             $buildNum = $selected.Split("|")[0].Replace("Build_","").Trim()
 
-            if ($envName -eq "DEV") {
-              $storage = $env:DEV_ARTIFACT_STORAGE
-            } else {
-              $storage = $env:PROD_ARTIFACT_STORAGE
-            }
-          }
+            $storage = if ($envName -eq "DEV") { $env:DEV_ARTIFACT_STORAGE } else { $env:PROD_ARTIFACT_STORAGE }
 
-          $folder = Get-ChildItem $storage -Directory |
-                    Where-Object { $_.Name -like "build_${buildNum}_*" } |
-                    Select-Object -First 1
+            $folder = Get-ChildItem $storage -Directory |
+                      Where-Object { $_.Name -like "build_${buildNum}_*" } |
+                      Select-Object -First 1
+          }
 
           if ($null -eq $folder) { throw "Artifact not found" }
 
@@ -271,7 +278,7 @@ Date    : $time
           Start-WebAppPool $pool
           Start-Website $site
 
-          Write-Host "Deployment Completed"
+          Write-Host "Deployment successful"
         '''
       }
     }
@@ -284,11 +291,12 @@ Date    : $time
           $pool = if ("${params.ENVIRONMENT}" -eq "DEV") { $env:DEV_APP_POOL } else { $env:PROD_APP_POOL }
 
           $state = (Get-WebAppPoolState -Name $pool).Value
-          Write-Host "App Pool: $state"
 
           if ($state -ne "Started") {
             throw "Deployment failed"
           }
+
+          Write-Host "Deployment verified successfully"
         '''
       }
     }
